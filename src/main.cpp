@@ -7,8 +7,8 @@
 // ==========================================
 // הגדרות כלליות ורשת
 // ==========================================
-const char* WIFI_SSID     = "Harari";
-const char* WIFI_PASSWORD = "10203040";
+const char* WIFI_SSID     = "<your_wifi_ssid>"; // שנה ל-SSID של הרשת שלך
+const char* WIFI_PASSWORD = "<your_wifi_password>"; // שנה ל-סיסמה של הרשת שלך
 
 // שם האיזור (אפשר לתת רק תחילית, למשל "תל אביב" יתפוס גם "תל אביב - מזרח")
 const String MY_AREA = "טל - אל"; // שנה לשם האיזור שלך "נוף הגליל"
