@@ -1,9 +1,7 @@
-
-#include <ArduinoJson.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
-#include <ArduinoJson.h> // מומלץ גרסה 6 ומעלה
+#include <ArduinoJson.h> 
 #include <Adafruit_NeoPixel.h>
 
 // ==========================================
@@ -12,8 +10,8 @@
 const char* WIFI_SSID     = "Harari";
 const char* WIFI_PASSWORD = "10203040";
 
-// שם האיזור (אפשר לתת רק תחילית, למשל "תל אביב" יתפוס גם "תל אביב - מזרח")
-const String MY_AREA = "טל - אל"; // שנה לשם האיזור שלך "נוף הגליל"
+// שם האיזור 
+const String MY_AREA = "טל - אל"; 
 
 // ==========================================
 // הגדרת מכונת המצבים (State Machine)
@@ -29,13 +27,16 @@ enum AlertState {
 AlertState currentState = STATE_UNCONNECTED;
 unsigned long eventEndedStartTime = 0; // טיימר למצב סיום אירוע
 
+// משתנה חדש: שמירת תאריך ההתראה האחרונה כדי לא להפעיל אזעקות על אירועי עבר
+String lastAlertDate = ""; 
+
 // ==========================================
 // 1. פונקציית משיכת ה-JSON מהשרת
 // ==========================================
-const char* SERVER_URL = "https://www.oref.org.il/WarningMessages/alert/alerts.json";
+const char* SERVER_URL = "https://www.oref.org.il/warningMessages/alert/History/AlertsHistory.json";
 
 String fetchAlertJson() {
-  String payload = "ERROR"; // שינוי: ברירת מחדל היא שגיאה, ולא מחרוזת ריקה
+  String payload = "ERROR"; 
   if (WiFi.status() == WL_CONNECTED) {
     WiFiClientSecure client;
     client.setInsecure(); // דילוג על אימות תעודת SSL
@@ -47,7 +48,7 @@ String fetchAlertJson() {
     http.addHeader("Accept", "application/json, text/plain, */*");
     http.addHeader("Referer", "https://www.oref.org.il/");
     http.addHeader("X-Requested-With", "XMLHttpRequest");
-    http.addHeader("Connection", "close"); // מניעת "נזילת" שקעי תקשורת
+    http.addHeader("Connection", "close"); 
 
     int httpCode = http.GET();
     if (httpCode == 200) {
@@ -55,21 +56,22 @@ String fetchAlertJson() {
     } else {
       Serial.printf("HTTP GET Failed, error code: %d\n", httpCode);
     } 
+    
     http.end();
+    client.stop(); // <--- התיקון החשוב: משחרר את חיבור הרשת ומונע קריסת DNS!
   }
 
-
-    // --- ניקוי המחרוזת מתווים נסתרים (BOM) ---
+  // --- ניקוי המחרוזת מתווים נסתרים (BOM) ---
   payload.trim(); 
   if (payload.startsWith("\xEF\xBB\xBF")) {
     payload = payload.substring(3); 
-  } else {
-      Serial.println(".");
   }
   
   //debug
   if (payload != "" && payload != "ERROR") {
     Serial.printf("Fetched JSON Payload: %s\n", payload.c_str());
+  } else {
+    Serial.print("{}");
   }
 
   return payload;
@@ -83,66 +85,94 @@ String fetchAlertJson() {
 // אם היא מוצאת, היא מדפיסה את המידע הרלוונטי ומשנה מצב.
 void parseAlertJsonAndUpdateState(String payload) {
   // אם קיבלנו שגיאה מפורשת ממשיכת הנתונים, לא משנים מצב מ-UNCONNECTED
-
   if (payload == "ERROR") {
     return;
   }
 
-  // אם התשובה קצרה מאוד (לרוב קובץ ריק או רק "{}"), אין התרעות פעילות בארץ
+  // אם התשובה קצרה מאוד (לרוב קובץ ריק או רק "[]"), משמעותה הצלחה בתקשורת אך אין נתונים
   if (payload.length() <= 10) {
     if (currentState == STATE_UNCONNECTED) {
       currentState = STATE_NO_ALERTS;
-      Serial.println(">>> Initial fetch successful (No alerts). Moved to STATE_NO_ALERTS.");
-    } else if (currentState == STATE_ALERT_ROCKETS || currentState == STATE_ALERT_GENERAL) {
-      currentState = STATE_EVENT_ENDED;
-      eventEndedStartTime = millis();
-      Serial.println(">>> Event Ended (No alerts nationwide). Transitioning to EVENT_ENDED state.");
+      Serial.println(">>> Initial fetch successful (Empty history). Moved to STATE_NO_ALERTS.");
     }
     return;
   }
 
-  JsonDocument doc;
+    //--------------------------------------------------------------------------------
+    //debug
+    Serial.printf("Fetched JSON Payload: %s\n", payload.c_str());
+    //--------------------------------------------------------------------------------
+
+
+  // פירסור ה-JSON (מותאם לגרסה 7 - הספרייה מנהלת את הזיכרון לבד)
+  JsonDocument doc; 
   DeserializationError error = deserializeJson(doc, payload);
 
   if (error) {
-    Serial.println("Failed to parse JSON!");
+    // טיפול ב-EmptyInput מצד הפירסר (מקביל לקובץ ריק)
+    if (error == DeserializationError::EmptyInput) {
+      if (currentState == STATE_UNCONNECTED) {
+        currentState = STATE_NO_ALERTS;
+        Serial.println(">>> Initial fetch successful (EmptyInput). Moved to STATE_NO_ALERTS.");
+      }
+      return;
+    }
+    
+    Serial.print("Failed to parse JSON: ");
+    Serial.println(error.c_str());
     return;
   }
 
-  JsonArray data = doc["data"].as<JsonArray>();
-  String title = doc["title"].as<String>();
-  String cat = doc["cat"].as<String>();
-  
+  JsonArray alerts = doc.as<JsonArray>();
   bool areaFound = false;
 
-  for (JsonVariant v : data) {
-    String city = v.as<String>();
-    if (city.startsWith(MY_AREA)) {
+  // מעבר על מערך ההיסטוריה (הקובץ מסודר מההתראה החדשה ביותר לישנה ביותר)
+  for (JsonObject alert : alerts) {
+    String dataField = alert["data"].as<String>();
+    
+    // בודק אם השדה מתחיל בשם היישוב שהגדרנו (תופס גם הרחבות כמו "טל - אל")
+    if (dataField.startsWith(MY_AREA)) {
       areaFound = true;
+      String currentAlertDate = alert["alertDate"].as<String>();
+      
+      // אם אנחנו בהפעלה ראשונה - רק מסנכרנים את התאריך ועוברים לשגרה
+      if (currentState == STATE_UNCONNECTED) {
+        lastAlertDate = currentAlertDate;
+        currentState = STATE_NO_ALERTS;
+        Serial.println(">>> Initial fetch successful. Synced alert history. Moved to STATE_NO_ALERTS.");
+      } 
+      // זיהוי התראה *חדשה* לפי התאריך (אם התאריך שונה ממה ששמרנו בפעם הקודמת)
+      else if (currentAlertDate != lastAlertDate) {
+        lastAlertDate = currentAlertDate;
+        
+        int category = alert["category"].as<int>();
+        String title = alert["title"].as<String>();
+        
+        Serial.println("\n--- NEW RELEVANT ALERT FOUND! ---");
+        Serial.println("Time: " + currentAlertDate);
+        Serial.println("Title: " + title);
+        Serial.println("---------------------------------");
+
+        if (category == 1 || title.indexOf("רקטות") >= 0) {
+          currentState = STATE_ALERT_ROCKETS;
+        } else if (category == 13 || title == "האירוע הסתיים") {
+          currentState = STATE_EVENT_ENDED;
+          eventEndedStartTime = millis();
+          Serial.println(">>> Event Ended alert received. Transitioning to EVENT_ENDED state.");
+        } else {
+          currentState = STATE_ALERT_GENERAL;
+        }
+      }
+      
+      // מצאנו את ההתראה האחרונה ביותר ליישוב שלנו בהיסטוריה - אפשר לעצור את הסריקה
       break; 
     }
   }
 
-  if (areaFound) {
-    Serial.println("\n--- RELEVANT ALERT FOUND! ---");
-    serializeJsonPretty(doc, Serial);
-    Serial.println("\n-----------------------------");
-
-    if (cat == "1" || title.indexOf("רקטות") >= 0) {
-      currentState = STATE_ALERT_ROCKETS;
-    } else {
-      currentState = STATE_ALERT_GENERAL;
-    }
-  } else {
-    // יש התרעות בארץ, אבל לא באיזור שלנו
-    if (currentState == STATE_UNCONNECTED) {
+  // אם המערך נסרק לחלוטין והיישוב שלנו לא הופיע בו בכלל, וזו הפעלה ראשונה:
+  if (!areaFound && currentState == STATE_UNCONNECTED) {
       currentState = STATE_NO_ALERTS;
-      Serial.println(">>> Initial fetch successful (Alerts elsewhere). Moved to STATE_NO_ALERTS.");
-    } else if (currentState == STATE_ALERT_ROCKETS || currentState == STATE_ALERT_GENERAL) {
-      currentState = STATE_EVENT_ENDED;
-      eventEndedStartTime = millis();
-      Serial.println(">>> Alert for our area cleared. Transitioning to EVENT_ENDED state.");
-    }
+      Serial.println(">>> Initial fetch successful (Area not in history). Moved to STATE_NO_ALERTS.");
   }
 }
 
@@ -160,22 +190,21 @@ void operateLEDs() {
   // קצב הבהוב משתנה בהתאם למצב
   unsigned long blinkInterval = 500;
   if (currentState == STATE_ALERT_ROCKETS) blinkInterval = 200;
-  else if (currentState == STATE_UNCONNECTED) blinkInterval = 1000; // הבהוב כחול איטי בזמן המתנה לנתונים
+  else if (currentState == STATE_UNCONNECTED) blinkInterval = 1000; 
 
   if (millis() - lastLedUpdate >= blinkInterval) {
     lastLedUpdate = millis();
-    ledState = !ledState; // החלפת מצב דלוק/כבוי
+    ledState = !ledState; 
 
     for (int i = 0; i < NUM_LEDS; i++) {
       switch (currentState) {
         case STATE_UNCONNECTED:
-          // אור כחול מהבהב לאט - מסמן נסיון התחברות לשרת להבאת נתונים ראשוניים
           if (ledState) strip.setPixelColor(i, strip.Color(0, 0, 255));
           else strip.setPixelColor(i, strip.Color(0, 0, 0));
           break;
 
         case STATE_NO_ALERTS:
-          strip.setPixelColor(i, strip.Color(0, 0, 0)); // כבוי בשגרה
+          strip.setPixelColor(i, strip.Color(0, 0, 0)); 
           break;
           
         case STATE_ALERT_ROCKETS:
@@ -215,7 +244,6 @@ void operateBuzzer() {
   unsigned long buzzInterval = (currentState == STATE_ALERT_ROCKETS) ? 500 : 1000;
 
   if (currentState == STATE_NO_ALERTS || currentState == STATE_EVENT_ENDED || currentState == STATE_UNCONNECTED) {
-    // השתקה בשגרה, בסיום אירוע או בהמתנה לחיבור
     ledcWriteTone(ledcChannel, 0);
     return;
   }
@@ -238,13 +266,11 @@ void setup() {
   //define buzzer
   ledcSetup(ledcChannel, freq, resolution);
   ledcAttachPin(buzzerPin, ledcChannel);
-//test buzzer
+  //test buzzer
   ledcWriteTone(ledcChannel, 1000);
   delay(1000);
   ledcWriteTone(ledcChannel, 0);
 
-
-  
   strip.begin();
   strip.show();
 
@@ -257,27 +283,105 @@ void setup() {
   Serial.println("\nWiFi Connected!");
 }
 
+// ==========================================
+// משתני סימולציה
+// ==========================================
+bool simulation = false;
+String jsonStr = "";
+int networkErrorCount = 0; // מונה שגיאות רשת ברצף
+
+
 void loop() {
-  // --- 1. טיימר למשיכת נתונים כל כמה שניות ---
+  // ==========================================
+  // קוד סימולציה להזרקת JSON דרך Serial Monitor
+  // ==========================================
+  if (Serial.available() > 0) {
+    char inChar = Serial.read();
+    
+    if (inChar >= '0' && inChar <= '4') {
+      simulation = true;
+      Serial.println("\n==================================");
+      Serial.printf(">>> SIMULATION MODE ON: Injected JSON #%c\n", inChar);
+      Serial.println("==================================\n");
+      
+      String fakeTime = String(millis()); 
+      
+      switch (inChar) {
+        case '0': jsonStr = "[]"; break;
+        case '1': jsonStr = "[{\"alertDate\":\"" + fakeTime + "\",\"title\":\"ירי רקטות וטילים\",\"data\":\"טל - אל דרום\",\"category\":1}]"; break;
+        case '2': jsonStr = "[{\"alertDate\":\"" + fakeTime + "\",\"title\":\"ירי רקטות וטילים\",\"data\":\"טל - אל\",\"category\":1}]"; break;
+        case '3': jsonStr = "[{\"alertDate\":\"" + fakeTime + "\",\"title\":\"חדירת כלי טיס עוין\",\"data\":\"טל - אל\",\"category\":2}]"; break;
+        case '4': jsonStr = "[{\"alertDate\":\"" + fakeTime + "\",\"title\":\"האירוע הסתיים\",\"data\":\"טל - אל\",\"category\":13}]"; break;
+      }
+    } 
+    else if (inChar == '9') {
+      simulation = false;
+      Serial.println("\n==================================");
+      Serial.println(">>> SIMULATION MODE OFF: Returning to Live API");
+      Serial.println("==================================\n");
+    }
+  }
+
+  // --- משתני זמן גלובליים בתוך הלופ ---
+  static unsigned long lastWiFiAttempt = 0;
   static unsigned long lastApiCheck = 0;
-  const unsigned long API_CHECK_INTERVAL = 10000; //  milliseconds delay between API checks
+  const unsigned long API_CHECK_INTERVAL = 10000; // 10 seconds delay
+
+  // ==========================================
+  // מנגנון התאוששות רשת (Auto-Recovery)
+  // ==========================================
+  if (WiFi.status() != WL_CONNECTED && !simulation) {
+    if (millis() - lastWiFiAttempt >= 10000) {
+      lastWiFiAttempt = millis();
+      Serial.println("WiFi connection lost! Attempting to reconnect...");
+      currentState = STATE_UNCONNECTED; 
+      
+      WiFi.disconnect();
+      delay(100); // השהייה קטנטנה שמאפשרת לאנטנה להתנתק באמת
+      WiFi.reconnect(); // פקודה נקייה יותר מ-begin שמאלצת חיבור מחדש
+    }
+  }
+
+  // --- 1. טיימר למשיכת נתונים כל כמה שניות ---
   if (millis() - lastApiCheck >= API_CHECK_INTERVAL) {
     lastApiCheck = millis();
     
-    String jsonPayload = fetchAlertJson();
-    parseAlertJsonAndUpdateState(jsonPayload);
+    if (WiFi.status() == WL_CONNECTED || simulation) {
+      String jsonPayload = simulation ? jsonStr : fetchAlertJson();
+      
+      if (jsonPayload == "ERROR" && !simulation) {
+        networkErrorCount++;
+        Serial.printf("Network error count: %d\n", networkErrorCount);
+        
+        if (networkErrorCount >= 3) {
+          Serial.println(">>> Too many network errors. Forcing HARD WiFi Reset...");
+          currentState = STATE_UNCONNECTED;
+          
+          WiFi.disconnect(true); // ניתוק אגרסיבי כולל מחיקת הגדרות זמניות
+          delay(200); 
+          WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+          
+          networkErrorCount = 0; 
+          lastWiFiAttempt = millis(); 
+          // אנחנו נאפס גם את זמן בדיקת ה-API כדי שלא ינסה לבדוק מיד לפני שהרשת קמה
+          lastApiCheck = millis(); 
+        }
+      } else {
+        networkErrorCount = 0;
+        parseAlertJsonAndUpdateState(jsonPayload);
+      }
+    }
   }
 
-  // --- 2. טיפול במצב סיום אירוע (חזרה לשגרה אחרי זמן מסוים) ---
+  // --- 2. טיפול במצב סיום אירוע ---
   if (currentState == STATE_EVENT_ENDED) {
-    // נשארים במצב 'סיום אירוע' (למשל אור ירוק) למשך 10 שניות ואז חוזרים לשגרה
-    if (millis() - eventEndedStartTime > 10000) { 
+    if (millis() - eventEndedStartTime > 5000) { 
       currentState = STATE_NO_ALERTS;
       Serial.println(">>> Return to Normal Routine (STATE_NO_ALERTS).");
     }
   }
 
-  // --- 3. עדכון החומרה לפי מכונת המצבים הנוכחית ---
+  // --- 3. עדכון החומרה ---
   operateLEDs();
   operateBuzzer();
 }
