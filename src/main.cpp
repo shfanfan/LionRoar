@@ -1,3 +1,5 @@
+
+#include <ArduinoJson.h>
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
@@ -7,8 +9,8 @@
 // ==========================================
 // הגדרות כלליות ורשת
 // ==========================================
-const char* WIFI_SSID     = "<your_wifi_ssid>"; // שנה ל-SSID של הרשת שלך
-const char* WIFI_PASSWORD = "<your_wifi_password>"; // שנה ל-סיסמה של הרשת שלך
+const char* WIFI_SSID     = "Harari";
+const char* WIFI_PASSWORD = "10203040";
 
 // שם האיזור (אפשר לתת רק תחילית, למשל "תל אביב" יתפוס גם "תל אביב - מזרח")
 const String MY_AREA = "טל - אל"; // שנה לשם האיזור שלך "נוף הגליל"
@@ -52,7 +54,7 @@ String fetchAlertJson() {
       payload = http.getString();
     } else {
       Serial.printf("HTTP GET Failed, error code: %d\n", httpCode);
-    }
+    } 
     http.end();
   }
 
@@ -61,6 +63,8 @@ String fetchAlertJson() {
   payload.trim(); 
   if (payload.startsWith("\xEF\xBB\xBF")) {
     payload = payload.substring(3); 
+  } else {
+      Serial.println(".");
   }
   
   //debug
@@ -145,8 +149,8 @@ void parseAlertJsonAndUpdateState(String payload) {
 // ==========================================
 // 3. פונקציית ניהול הלדים (Addressable LED)
 // ==========================================
-#define LED_PIN     37
-#define NUM_LEDS    2
+#define LED_PIN     17
+#define NUM_LEDS    10
 Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 void operateLEDs() {
@@ -197,7 +201,12 @@ void operateLEDs() {
 // ==========================================
 // 4. פונקציית ניהול הזמזם (Buzzer)
 // ==========================================
-#define BUZZER_PIN 25
+
+const int buzzerPin = 5;
+const int ledcChannel = 0;
+const int resolution = 8;
+const int freq = 2000;
+
 
 void operateBuzzer() {
   static unsigned long lastBuzzerUpdate = 0;
@@ -207,14 +216,14 @@ void operateBuzzer() {
 
   if (currentState == STATE_NO_ALERTS || currentState == STATE_EVENT_ENDED || currentState == STATE_UNCONNECTED) {
     // השתקה בשגרה, בסיום אירוע או בהמתנה לחיבור
-    digitalWrite(BUZZER_PIN, LOW);
+    ledcWriteTone(ledcChannel, 0);
     return;
   }
 
   if (millis() - lastBuzzerUpdate >= buzzInterval) {
     lastBuzzerUpdate = millis();
     buzzerState = !buzzerState;
-    digitalWrite(BUZZER_PIN, buzzerState ? HIGH : LOW);
+    ledcWriteTone(ledcChannel, buzzerState ? 1000 : 0);
   }
 }
 
@@ -226,8 +235,15 @@ void operateBuzzer() {
 void setup() {
   Serial.begin(115200);
   
-  pinMode(BUZZER_PIN, OUTPUT);
-  digitalWrite(BUZZER_PIN, LOW);
+  //define buzzer
+  ledcSetup(ledcChannel, freq, resolution);
+  ledcAttachPin(buzzerPin, ledcChannel);
+//test buzzer
+  ledcWriteTone(ledcChannel, 1000);
+  delay(1000);
+  ledcWriteTone(ledcChannel, 0);
+
+
   
   strip.begin();
   strip.show();
