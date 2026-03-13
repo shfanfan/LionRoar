@@ -12,7 +12,8 @@ const char* WIFI_PASSWORD = "10203040";
 
 // שם האיזור 
 const String MY_AREA = "טל - אל"; 
-
+//const String MY_AREA = "קריית שמונה"; 
+//const String MY_AREA = "מרגל"; 
 // ==========================================
 // הגדרת מכונת המצבים (State Machine)
 // ==========================================
@@ -58,7 +59,7 @@ String fetchAlertJson() {
     } 
     
     http.end();
-    client.stop(); // <--- התיקון החשוב: משחרר את חיבור הרשת ומונע קריסת DNS!
+    client.stop(); // <--- משחרר את חיבור הרשת ומונע קריסת DNS!
   }
 
   // --- ניקוי המחרוזת מתווים נסתרים (BOM) ---
@@ -67,12 +68,12 @@ String fetchAlertJson() {
     payload = payload.substring(3); 
   }
   
-  //debug
-  if (payload != "" && payload != "ERROR") {
-    Serial.printf("Fetched JSON Payload: %s\n", payload.c_str());
-  } else {
-    Serial.print("{}");
-  }
+  // //debug
+  // if (payload != "" && payload != "ERROR") {
+  //   Serial.printf("Fetched JSON Payload: %s\n", payload.c_str());
+  // } else {
+  //   Serial.print("{}");
+  // }
 
   return payload;
 }
@@ -81,98 +82,78 @@ String fetchAlertJson() {
 // ==========================================
 // 2. פונקציית פענוח ה-JSON ועדכון המצב
 // ==========================================
-// הפונקציה מחפשת את התחילית של האיזור המוגדר.
-// אם היא מוצאת, היא מדפיסה את המידע הרלוונטי ומשנה מצב.
-void parseAlertJsonAndUpdateState(String payload) {
-  // אם קיבלנו שגיאה מפורשת ממשיכת הנתונים, לא משנים מצב מ-UNCONNECTED
-  if (payload == "ERROR") {
-    return;
-  }
 
-  // אם התשובה קצרה מאוד (לרוב קובץ ריק או רק "[]"), משמעותה הצלחה בתקשורת אך אין נתונים
-  if (payload.length() <= 10) {
-    if (currentState == STATE_UNCONNECTED) {
-      currentState = STATE_NO_ALERTS;
-      Serial.println(">>> Initial fetch successful (Empty history). Moved to STATE_NO_ALERTS.");
-    }
-    return;
-  }
-
-    //--------------------------------------------------------------------------------
-    //debug
-    Serial.printf("Fetched JSON Payload: %s\n", payload.c_str());
-    //--------------------------------------------------------------------------------
-
-
-  // פירסור ה-JSON (מותאם לגרסה 7 - הספרייה מנהלת את הזיכרון לבד)
-  JsonDocument doc; 
-  DeserializationError error = deserializeJson(doc, payload);
-
-  if (error) {
-    // טיפול ב-EmptyInput מצד הפירסר (מקביל לקובץ ריק)
-    if (error == DeserializationError::EmptyInput) {
+void parseAlertJsonAndUpdateState(String jsonPayload) {
+  // 1. טיפול בשגיאת תקשורת
+  if (jsonPayload == "ERROR") {
+    currentState = STATE_UNCONNECTED;
+    return; 
+  } else { //good json (though could be empty...
       if (currentState == STATE_UNCONNECTED) {
         currentState = STATE_NO_ALERTS;
-        Serial.println(">>> Initial fetch successful (EmptyInput). Moved to STATE_NO_ALERTS.");
-      }
-      return;
+        Serial.println("\n>>> ALERTS DETECTED! (Moving to STATE_ALERT_ROCKETS)");
     }
-    
-    Serial.print("Failed to parse JSON: ");
+  }
+
+
+
+  // 2. טיפול בקובץ ריק (הכל תקין, פשוט אין כרגע התראות בארץ)
+  if (jsonPayload.length() < 10) {
+    Serial.print(".");
+    currentState = STATE_NO_ALERTS;
+    return; 
+  } 
+
+  //debug:
+  Serial.printf("JSON: %s\n", jsonPayload.c_str());
+
+  // הקצאת זיכרון לפארסר 
+  JsonDocument doc; 
+  DeserializationError error = deserializeJson(doc, jsonPayload);
+
+  if (error) {
+    Serial.print("JSON Parse failed: ");
     Serial.println(error.c_str());
     return;
   }
 
-  JsonArray alerts = doc.as<JsonArray>();
-  bool areaFound = false;
-
-  // מעבר על מערך ההיסטוריה (הקובץ מסודר מההתראה החדשה ביותר לישנה ביותר)
-  for (JsonObject alert : alerts) {
-    String dataField = alert["data"].as<String>();
+  // סריקת המערך מפיקוד העורף (האיבר הראשון הוא החדש ביותר)
+  for (JsonObject alert : doc.as<JsonArray>()) {
+    String city = alert["data"].as<String>();
     
-    // בודק אם השדה מתחיל בשם היישוב שהגדרנו (תופס גם הרחבות כמו "טל - אל")
-    if (dataField.startsWith(MY_AREA)) {
-      areaFound = true;
+    if (city.startsWith(MY_AREA)) {
       String currentAlertDate = alert["alertDate"].as<String>();
-      
-      // אם אנחנו בהפעלה ראשונה - רק מסנכרנים את התאריך ועוברים לשגרה
-      if (currentState == STATE_UNCONNECTED) {
-        lastAlertDate = currentAlertDate;
-        currentState = STATE_NO_ALERTS;
-        Serial.println(">>> Initial fetch successful. Synced alert history. Moved to STATE_NO_ALERTS.");
-      } 
-      // זיהוי התראה *חדשה* לפי התאריך (אם התאריך שונה ממה ששמרנו בפעם הקודמת)
-      else if (currentAlertDate != lastAlertDate) {
-        lastAlertDate = currentAlertDate;
-        
-        int category = alert["category"].as<int>();
-        String title = alert["title"].as<String>();
-        
-        Serial.println("\n--- NEW RELEVANT ALERT FOUND! ---");
-        Serial.println("Time: " + currentAlertDate);
-        Serial.println("Title: " + title);
-        Serial.println("---------------------------------");
+      int category = alert["category"].as<int>();
 
-        if (category == 1 || title.indexOf("רקטות") >= 0) {
-          currentState = STATE_ALERT_ROCKETS;
-        } else if (category == 13 || title == "האירוע הסתיים") {
-          currentState = STATE_EVENT_ENDED;
-          eventEndedStartTime = millis();
-          Serial.println(">>> Event Ended alert received. Transitioning to EVENT_ENDED state.");
-        } else {
-          currentState = STATE_ALERT_GENERAL;
-        }
+      // מניעת טיפול כפול: האם זו אותה התראה שכבר טיפלנו בה?
+      if (currentAlertDate == lastAlertDate) {
+        break; // יוצאים מיד, אין צורך להמשיך לסרוק
       }
+
+      // מצאנו התראה חדשה (או שהמערכת עשתה ריסט)
+      lastAlertDate = currentAlertDate;
       
-      // מצאנו את ההתראה האחרונה ביותר ליישוב שלנו בהיסטוריה - אפשר לעצור את הסריקה
+      // ניתוב למצב המתאים
+      if (category == 13) {
+        // סיום אירוע / חזרה לשגרה
+        currentState = STATE_EVENT_ENDED;
+        eventEndedStartTime = millis(); 
+        Serial.println("Action: Event Ended (Moving to All-Clear sequence).");
+      } 
+      else if (category == 1) {
+        // ירי רקטות וטילים
+        currentState = STATE_ALERT_ROCKETS;
+        Serial.println("Action: ROCKET ALARM TRIGGERED! (Moving to STATE_ALERT_ROCKETS).");
+      }
+      else {
+        // כל איום אחר
+        currentState = STATE_ALERT_GENERAL;
+        Serial.println("Action: GENERAL ALARM TRIGGERED! (Moving to STATE_ALERT_GENERAL).");
+      }
+
+      // הגבנו לאירוע הכי עדכני ליישוב שלנו - יוצאים מסריקת ההיסטוריה
       break; 
     }
-  }
-
-  // אם המערך נסרק לחלוטין והיישוב שלנו לא הופיע בו בכלל, וזו הפעלה ראשונה:
-  if (!areaFound && currentState == STATE_UNCONNECTED) {
-      currentState = STATE_NO_ALERTS;
-      Serial.println(">>> Initial fetch successful (Area not in history). Moved to STATE_NO_ALERTS.");
   }
 }
 
