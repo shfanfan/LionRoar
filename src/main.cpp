@@ -9,9 +9,13 @@
 // ==========================================
 const char* WIFI_SSID     = "Harari";
 const char* WIFI_PASSWORD = "10203040";
+// --- NTP Server Settings ---
+const char* ntpServer = "pool.ntp.org";
+const long  gmtOffset_sec = 0;      // Replace with your timezone offset in seconds (e.g., -18000 for EST)
+const int   daylightOffset_sec = 0; // Set to 3600 if your timezone observes daylight saving time
 
 // שם האיזור 
-const String MY_AREA = "טל - אל"; 
+const String MY_AREA = "טל - אל" ; 
 //const String MY_AREA = "קריית שמונה"; 
 //const String MY_AREA = "מרגל"; 
 // ==========================================
@@ -30,6 +34,20 @@ unsigned long eventEndedStartTime = 0; // טיימר למצב סיום אירו�
 
 // משתנה חדש: שמירת תאריך ההתראה האחרונה כדי לא להפעיל אזעקות על אירועי עבר
 String lastAlertDate = ""; 
+
+// --- Function to fetch and print time ---
+void printLocalTime() {
+  struct tm timeinfo;
+  
+  // getLocalTime() fetches the time from the internal clock, which is synced by NTP
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("Failed to obtain time from NTP server");
+    return;
+  }
+  
+  // Print the time to the serial monitor in a readable format
+  Serial.print(&timeinfo, "%H:%M:%S"); 
+}
 
 // ==========================================
 // 1. פונקציית משיכת ה-JSON מהשרת
@@ -60,6 +78,7 @@ String fetchAlertJson() {
     
     http.end();
     client.stop(); // <--- משחרר את חיבור הרשת ומונע קריסת DNS!
+
   }
 
   // --- ניקוי המחרוזת מתווים נסתרים (BOM) ---
@@ -91,30 +110,28 @@ void parseAlertJsonAndUpdateState(String jsonPayload) {
   } else { //good json (though could be empty...
       if (currentState == STATE_UNCONNECTED) {
         currentState = STATE_NO_ALERTS;
-        Serial.println("\n>>> ALERTS DETECTED! (Moving to STATE_ALERT_ROCKETS)");
+        Serial.println("\n>>> connection to pikud ha'oref server confirmed! (Moving to STATE_NO_ALERTS)");
     }
   }
 
-
-
   // 2. טיפול בקובץ ריק (הכל תקין, פשוט אין כרגע התראות בארץ)
-  if (jsonPayload.length() < 10) {
+  if (jsonPayload.length() < 1) {
     Serial.print(".");
     currentState = STATE_NO_ALERTS;
     return; 
   } 
-
-  //debug:
-  Serial.printf("JSON: %s\n", jsonPayload.c_str());
 
   // הקצאת זיכרון לפארסר 
   JsonDocument doc; 
   DeserializationError error = deserializeJson(doc, jsonPayload);
 
   if (error) {
+    Serial.printf("JSON: %s\n\n", jsonPayload.c_str());
     Serial.print("JSON Parse failed: ");
     Serial.println(error.c_str());
     return;
+  }else{
+    serializeJsonPretty(doc, Serial);
   }
 
   // סריקת המערך מפיקוד העורף (האיבר הראשון הוא החדש ביותר)
@@ -169,8 +186,8 @@ void operateLEDs() {
   static bool ledState = false;
   
   // קצב הבהוב משתנה בהתאם למצב
-  unsigned long blinkInterval = 500;
-  if (currentState == STATE_ALERT_ROCKETS) blinkInterval = 200;
+  unsigned long blinkInterval = 1000;
+  if (currentState == STATE_ALERT_ROCKETS) blinkInterval = 500;
   else if (currentState == STATE_UNCONNECTED) blinkInterval = 1000; 
 
   if (millis() - lastLedUpdate >= blinkInterval) {
@@ -180,8 +197,8 @@ void operateLEDs() {
     for (int i = 0; i < NUM_LEDS; i++) {
       switch (currentState) {
         case STATE_UNCONNECTED:
-          if (ledState) strip.setPixelColor(i, strip.Color(0, 0, 255));
-          else strip.setPixelColor(i, strip.Color(0, 0, 0));
+          if (ledState) strip.setPixelColor(i, strip.Color(0, 0, 120));
+          else strip.setPixelColor(i, strip.Color(0, 0, 60));
           break;
 
         case STATE_NO_ALERTS:
@@ -189,13 +206,13 @@ void operateLEDs() {
           break;
           
         case STATE_ALERT_ROCKETS:
-          if (ledState) strip.setPixelColor(i, strip.Color(255, 0, 0));
-          else strip.setPixelColor(i, strip.Color(0, 0, 0));
+          if (ledState) strip.setPixelColor(i, strip.Color(100, 0, 0));
+          else strip.setPixelColor(i, strip.Color(20, 0, 0));
           break;
           
         case STATE_ALERT_GENERAL:
-          if (ledState) strip.setPixelColor(i, strip.Color(255, 165, 0));
-          else strip.setPixelColor(i, strip.Color(0, 0, 0));
+          if (ledState) strip.setPixelColor(i, strip.Color(30, 15, 30));
+          else strip.setPixelColor(i, strip.Color(60, 0, 0));
           break;
 
         case STATE_EVENT_ENDED:
@@ -253,15 +270,19 @@ void setup() {
   ledcWriteTone(ledcChannel, 0);
 
   strip.begin();
+  strip.setPixelColor(0, strip.Color(255, 0, 0));
+  strip.setPixelColor(1, strip.Color(0, 255, 0));
+  strip.setPixelColor(2, strip.Color(0, 0, 255));
   strip.show();
 
-  Serial.println("Connecting to WiFi...");
+
+  Serial.printf("connect to %s WiFi \n\n", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(1000);
-    Serial.printf("attempting to connect wifi (%s)...", WIFI_SSID);
-  }
-  Serial.println("\nWiFi Connected!");
+
+  Serial.printf("area of interest -  %s\n", MY_AREA.c_str());
+
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  printLocalTime();
 }
 
 // ==========================================
@@ -306,13 +327,13 @@ void loop() {
   // --- משתני זמן גלובליים בתוך הלופ ---
   static unsigned long lastWiFiAttempt = 0;
   static unsigned long lastApiCheck = 0;
-  const unsigned long API_CHECK_INTERVAL = 10000; // 10 seconds delay
+  const unsigned long API_CHECK_INTERVAL = 5000; // 10 seconds delay
 
   // ==========================================
   // מנגנון התאוששות רשת (Auto-Recovery)
   // ==========================================
   if (WiFi.status() != WL_CONNECTED && !simulation) {
-    if (millis() - lastWiFiAttempt >= 10000) {
+    if (millis() - lastWiFiAttempt >= 2000) {
       lastWiFiAttempt = millis();
       Serial.println("WiFi connection lost! Attempting to reconnect...");
       currentState = STATE_UNCONNECTED; 
@@ -341,11 +362,19 @@ void loop() {
           WiFi.disconnect(true); // ניתוק אגרסיבי כולל מחיקת הגדרות זמניות
           delay(200); 
           WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-          
-          networkErrorCount = 0; 
-          lastWiFiAttempt = millis(); 
-          // אנחנו נאפס גם את זמן בדיקת ה-API כדי שלא ינסה לבדוק מיד לפני שהרשת קמה
-          lastApiCheck = millis(); 
+          delay(1000); 
+          if (WiFi.status() == WL_CONNECTED) {
+            networkErrorCount = 0; 
+            lastWiFiAttempt = millis(); 
+            // אנחנו נאפס גם את זמן בדיקת ה-API כדי שלא ינסה לבדוק מיד לפני שהרשת קמה
+            lastApiCheck = millis(); 
+          }
+
+          if (networkErrorCount>10){
+            //ESP.reset() 
+            ESP.restart(); 
+          }
+
         }
       } else {
         networkErrorCount = 0;
@@ -356,7 +385,7 @@ void loop() {
 
   // --- 2. טיפול במצב סיום אירוע ---
   if (currentState == STATE_EVENT_ENDED) {
-    if (millis() - eventEndedStartTime > 5000) { 
+    if (millis() - eventEndedStartTime > 30000) { 
       currentState = STATE_NO_ALERTS;
       Serial.println(">>> Return to Normal Routine (STATE_NO_ALERTS).");
     }
