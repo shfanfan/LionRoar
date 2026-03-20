@@ -1,229 +1,359 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <WiFiClientSecure.h>
-#include <ArduinoJson.h> 
+#include <ArduinoJson.h>
 #include <Adafruit_NeoPixel.h>
 
 // ==========================================
 // הגדרות כלליות ורשת
 // ==========================================
-const char* WIFI_SSID     = "Harari";
-const char* WIFI_PASSWORD = "10203040";
+const char *WIFI_SSID = "Harari";
+const char *WIFI_PASSWORD = "10203040";
 // --- NTP Server Settings ---
-const char* ntpServer = "pool.ntp.org";
-const long  gmtOffset_sec = 0;      // Replace with your timezone offset in seconds (e.g., -18000 for EST)
-const int   daylightOffset_sec = 0; // Set to 3600 if your timezone observes daylight saving time
+const char *ntpServer = "pool.ntp.org";
+const long gmtOffset_sec = 0;     // Replace with your timezone offset in seconds (e.g., -18000 for EST)
+const int daylightOffset_sec = 0; // Set to 3600 if your timezone observes daylight saving time
 
-// שם האיזור 
-const String MY_AREA = "טל - אל" ; 
-//const String MY_AREA = "קריית שמונה"; 
-//const String MY_AREA = "מרגל"; 
-// ==========================================
-// הגדרת מכונת המצבים (State Machine)
-// ==========================================
-enum AlertState {
-  STATE_UNCONNECTED,    // מצב התחלתי - ממתין לנתונים ראשונים מהשרת
-  STATE_NO_ALERTS,      // מצב שגרה - אין התרעות
-  STATE_ALERT_ROCKETS,  // התרעת ירי רקטות וטילים
-  STATE_ALERT_GENERAL,  // התרעה כללית (חדירת כלי טיס, רעידת אדמה וכו')
-  STATE_EVENT_ENDED     // סיום אירוע (מצב זמני שמוצג אחרי שההתרעה יורדת)
+// שם האיזור
+const String MY_AREA = "טל - אל" ;
+//const String MY_AREA = "נס הרים";
+// const String MY_AREA = "קריית שמונה";
+// const String MY_AREA = "מרגל";
+//  ==========================================
+//  הגדרת מכונת המצבים (State Machine)
+//  ==========================================
+enum AlertState
+{
+  STATE_UNCONNECTED,   // מצב התחלתי - ממתין לנתונים ראשונים מהשרת
+  STATE_NO_ALERTS,     // מצב שגרה - אין התרעות
+  STATE_WARNING,       // בדקות הקרובות יתקבלו התראות באיזורך (מצב זמני שמוצג לפני ההתרעה עצמה)
+  STATE_ALERT_ROCKETS, // התרעת ירי רקטות וטילים
+  STATE_ALERT_GENERAL, // התרעה כללית (חדירת כלי טיס, רעידת אדמה וכו')
+  STATE_EVENT_ENDED    // סיום אירוע (מצב זמני שמוצג אחרי שההתרעה יורדת)
 };
 
 AlertState currentState = STATE_UNCONNECTED;
 unsigned long eventEndedStartTime = 0; // טיימר למצב סיום אירוע
 
 // משתנה חדש: שמירת תאריך ההתראה האחרונה כדי לא להפעיל אזעקות על אירועי עבר
-String lastAlertDate = ""; 
+String lastAlertDate = "";
 
 // --- Function to fetch and print time ---
-void printLocalTime() {
+void printLocalTime()
+{
   struct tm timeinfo;
-  
+
   // getLocalTime() fetches the time from the internal clock, which is synced by NTP
-  if (!getLocalTime(&timeinfo)) {
+  if (!getLocalTime(&timeinfo))
+  {
     Serial.println("Failed to obtain time from NTP server");
     return;
   }
-  
+
   // Print the time to the serial monitor in a readable format
-  Serial.print(&timeinfo, "%H:%M:%S"); 
+  Serial.println(&timeinfo, "network time: %Y-%m-%d %H:%M:%S ");
 }
-
-// ==========================================
-// 1. פונקציית משיכת ה-JSON מהשרת
-// ==========================================
-const char* SERVER_URL = "https://www.oref.org.il/warningMessages/alert/History/AlertsHistory.json";
-
-String fetchAlertJson() {
-  String payload = "ERROR"; 
-  if (WiFi.status() == WL_CONNECTED) {
-    WiFiClientSecure client;
-    client.setInsecure(); // דילוג על אימות תעודת SSL
-    
-    HTTPClient http;
-    http.begin(client, SERVER_URL);
-    
-    http.addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-    http.addHeader("Accept", "application/json, text/plain, */*");
-    http.addHeader("Referer", "https://www.oref.org.il/");
-    http.addHeader("X-Requested-With", "XMLHttpRequest");
-    http.addHeader("Connection", "close"); 
-
-    int httpCode = http.GET();
-    if (httpCode == 200) {
-      payload = http.getString();
-    } else {
-      Serial.printf("HTTP GET Failed, error code: %d\n", httpCode);
-    } 
-    
-    http.end();
-    client.stop(); // <--- משחרר את חיבור הרשת ומונע קריסת DNS!
-
-  }
-
-  // --- ניקוי המחרוזת מתווים נסתרים (BOM) ---
-  payload.trim(); 
-  if (payload.startsWith("\xEF\xBB\xBF")) {
-    payload = payload.substring(3); 
-  }
-  
-  // //debug
-  // if (payload != "" && payload != "ERROR") {
-  //   Serial.printf("Fetched JSON Payload: %s\n", payload.c_str());
-  // } else {
-  //   Serial.print("{}");
-  // }
-
-  return payload;
-}
-
 
 // ==========================================
 // 2. פונקציית פענוח ה-JSON ועדכון המצב
 // ==========================================
 
-void parseAlertJsonAndUpdateState(String jsonPayload) {
+bool parseAlertJsonAndUpdateState(String jsonPayload)
+{
+  //Serial.printf("parseAlertJsonAndUpdateState - parsing JSON: %s\n\n", jsonPayload.c_str());
+
+  bool res = false;
   // 1. טיפול בשגיאת תקשורת
-  if (jsonPayload == "ERROR") {
+  if (jsonPayload == "ERROR")
+  {
     currentState = STATE_UNCONNECTED;
-    return; 
-  } else { //good json (though could be empty...
-      if (currentState == STATE_UNCONNECTED) {
-        currentState = STATE_NO_ALERTS;
-        Serial.println("\n>>> connection to pikud ha'oref server confirmed! (Moving to STATE_NO_ALERTS)");
+    return res;
+  }
+  else
+  { // good json (though could be empty...
+    if (currentState == STATE_UNCONNECTED)
+    {
+      currentState = STATE_NO_ALERTS;
+      // Serial.println("\n>>> connection to pikud ha'oref server confirmed! (Moving to STATE_NO_ALERTS)");
     }
   }
 
   // 2. טיפול בקובץ ריק (הכל תקין, פשוט אין כרגע התראות בארץ)
-  if (jsonPayload.length() < 1) {
+  if (jsonPayload.length() < 10)
+  {
     Serial.print(".");
     currentState = STATE_NO_ALERTS;
-    return; 
-  } 
+    return res;
+  }
 
-  // הקצאת זיכרון לפארסר 
-  JsonDocument doc; 
+  // הקצאת זיכרון לפארסר
+  JsonDocument doc;
   DeserializationError error = deserializeJson(doc, jsonPayload);
 
-  if (error) {
-    Serial.printf("JSON: %s\n\n", jsonPayload.c_str());
+  if (error)
+  {
+    Serial.printf("parseAlertJsonAndUpdateState - parsing JSON: %s\n\n", jsonPayload.c_str());
     Serial.print("JSON Parse failed: ");
     Serial.println(error.c_str());
-    return;
-  }else{
-    serializeJsonPretty(doc, Serial);
+    return res;
+  }
+  else
+  {
+    // Serial.println("serializing JSON to Serial Monitor for debugging:");
+    // serializeJsonPretty(doc, Serial);
+    // Serial.println();
   }
 
   // סריקת המערך מפיקוד העורף (האיבר הראשון הוא החדש ביותר)
-  for (JsonObject alert : doc.as<JsonArray>()) {
-    String city = alert["data"].as<String>();
-    
-    if (city.startsWith(MY_AREA)) {
-      String currentAlertDate = alert["alertDate"].as<String>();
-      int category = alert["category"].as<int>();
+  // for (JsonObject alert : doc.as<JsonObject>()) {
+  String city = doc["data"].as<String>();
 
-      // מניעת טיפול כפול: האם זו אותה התראה שכבר טיפלנו בה?
-      if (currentAlertDate == lastAlertDate) {
-        break; // יוצאים מיד, אין צורך להמשיך לסרוק
-      }
+  // Serial.printf("\n>>> Checking alert for city: %s - %s \n", city.c_str(), city.startsWith(MY_AREA) ? "MATCH!" : "no match");
 
-      // מצאנו התראה חדשה (או שהמערכת עשתה ריסט)
-      lastAlertDate = currentAlertDate;
-      
-      // ניתוב למצב המתאים
-      if (category == 13) {
-        // סיום אירוע / חזרה לשגרה
-        currentState = STATE_EVENT_ENDED;
-        eventEndedStartTime = millis(); 
-        Serial.println("Action: Event Ended (Moving to All-Clear sequence).");
-      } 
-      else if (category == 1) {
-        // ירי רקטות וטילים
-        currentState = STATE_ALERT_ROCKETS;
-        Serial.println("Action: ROCKET ALARM TRIGGERED! (Moving to STATE_ALERT_ROCKETS).");
-      }
-      else {
-        // כל איום אחר
-        currentState = STATE_ALERT_GENERAL;
-        Serial.println("Action: GENERAL ALARM TRIGGERED! (Moving to STATE_ALERT_GENERAL).");
-      }
+  if (city.startsWith(MY_AREA))
+  {
+    String currentAlertDate = doc["alertDate"].as<String>();
+    int category = doc["category"].as<int>();
 
-      // הגבנו לאירוע הכי עדכני ליישוב שלנו - יוצאים מסריקת ההיסטוריה
-      break; 
+    // Serial.printf("category: %d, alertDate: %s, city: %s\n", category, currentAlertDate.c_str(), city.c_str());
+
+    // מניעת טיפול כפול: האם זו אותה התראה שכבר טיפלנו בה?
+    if (currentAlertDate == lastAlertDate)
+    {
+      return res; // break; // יוצאים מיד, אין צורך להמשיך לסרוק
     }
+
+    // מצאנו התראה חדשה (או שהמערכת עשתה ריסט)
+    lastAlertDate = currentAlertDate;
+
+    res = true;
+
+    // ניתוב למצב המתאים
+    if (category == 13)
+    {
+      // סיום אירוע / חזרה לשגרה
+      currentState = STATE_EVENT_ENDED;
+      eventEndedStartTime = millis();
+      printLocalTime();
+      Serial.println("Action: Event Ended (Moving to All-Clear sequence).");
+      serializeJsonPretty(doc, Serial);
+      Serial.println();
+    }
+    else if (category == 1)
+    {
+      // ירי רקטות וטילים
+      currentState = STATE_ALERT_ROCKETS;
+      printLocalTime();
+      Serial.println("Action: ROCKET ALARM TRIGGERED! (Moving to STATE_ALERT_ROCKETS).");
+      serializeJsonPretty(doc, Serial);
+      Serial.println();
+    }
+    else if (category == 14)
+    {
+      // ירי רקטות וטילים
+      currentState = STATE_WARNING;
+      printLocalTime();
+      Serial.println("Action: posibly alarm soon! (Moving to STATE_WARNING).");
+      serializeJsonPretty(doc, Serial);
+      Serial.println();
+    }
+    else
+    {
+      // כל איום אחר
+      currentState = STATE_ALERT_GENERAL;
+      printLocalTime();
+      Serial.println("Action: GENERAL ALARM TRIGGERED! (Moving to STATE_ALERT_GENERAL).");
+      serializeJsonPretty(doc, Serial);
+      Serial.println();
+    }
+
+    // הגבנו לאירוע הכי עדכני ליישוב שלנו - יוצאים מסריקת ההיסטוריה
+    // break;
   }
+  //}
+  return res;
+}
+
+// ==========================================
+// 1. פונקציית משיכת ה-JSON מהשרת
+// ==========================================
+const char *SERVER_URL = "https://www.oref.org.il/warningMessages/alert/History/AlertsHistory.json";
+
+String fetchAlertJson()
+{
+  String payload = "ERROR";
+
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    WiFiClientSecure client;
+    client.setInsecure(); // דילוג על אימות תעודת SSL
+
+    HTTPClient http;
+    http.begin(client, SERVER_URL);
+    http.addHeader("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
+    http.addHeader("Accept", "application/json, text/plain, */*");
+    http.addHeader("Referer", "https://www.oref.org.il/");
+    http.addHeader("X-Requested-With", "XMLHttpRequest");
+    http.addHeader("Connection", "close");
+
+    int httpCode = http.GET();
+    if (httpCode == HTTP_CODE_OK)
+    {
+      payload = "[]"; // Return an empty JSON array if no relevant objects were found
+
+      WiFiClient &stream = http.getStream();
+
+      String currentObject = "";
+      currentObject.reserve(512); // Pre-allocate memory to prevent heap fragmentation
+
+      int braceCount = 0;
+      bool inObject = false;
+
+      Serial.print("%");
+      // Read the stream byte-by-byte
+      while (stream.connected() && stream.available())
+      {
+          char c = stream.read();
+
+          // Track when an object starts and handles nested braces
+          if (c == '{')
+          {
+            inObject = true;
+            braceCount++;
+          }
+
+          // Build the string for the current object
+          if (inObject)
+          {
+            currentObject += c;
+          }
+
+          // Track when the object ends
+          if (c == '}')
+          {
+            braceCount--;
+
+            if (braceCount == 0)
+            {
+              // We now have ONE complete object in the currentObject string.
+              // Serial.println(currentObject);
+              // QUICK FILTER: Does this raw string even contain our target?
+              // This saves us from running the JSON parser on every single object.
+              if (currentObject.indexOf(MY_AREA) > 0)
+              {
+                // Serial.println("\n>>> Found a JSON object containing our area! Parsing this object:");
+                // Serial.println("--------------------------------------------------");
+                // Serial.println(currentObject);
+                // Serial.println("--------------------------------------------------");
+                // // We have a match! Now we safely parse just this one small object.
+                // StaticJsonDocument<512> doc;
+                // DeserializationError error = deserializeJson(doc, currentObject);
+
+                // if (!error)
+                // {
+                //   serializeJsonPretty(doc, Serial);
+                //   //break; // Uncomment if you only want to process the first matching object
+                // }
+
+                // if (parseAlertJsonAndUpdateState(currentObject)) {
+                //   Serial.println(">>> State updated based on this alert. No need to check older alerts in the history.");
+                //   // If the function returns true, it means we found a relevant alert and updated the state.
+                //   // We can break out of the loop since we only care about the most recent relevant alert.
+
+                // }
+                payload = currentObject;
+                break; // Stop reading more objects since we found a relevant one
+              }
+
+              // If we are here, it wasn't a match. Clear the buffer for the next object.
+              currentObject = "";
+              inObject = false;
+            }
+          }
+      }
+    }
+    else
+    {
+      Serial.printf("HTTP GET Failed, error code: %d\n", httpCode);
+    }
+
+    http.end();
+    client.stop(); // <--- משחרר את חיבור הרשת ומונע קריסת DNS!
+  }
+
+  return payload;
 }
 
 // ==========================================
 // 3. פונקציית ניהול הלדים (Addressable LED)
 // ==========================================
-#define LED_PIN     17
-#define NUM_LEDS    10
+#ifndef LED_PIN
+#define LED_PIN 48
+#endif
+
+#define NUM_LEDS 10
 Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
-void operateLEDs() {
+void operateLEDs()
+{
   static unsigned long lastLedUpdate = 0;
   static bool ledState = false;
-  
+
   // קצב הבהוב משתנה בהתאם למצב
   unsigned long blinkInterval = 1000;
-  if (currentState == STATE_ALERT_ROCKETS) blinkInterval = 500;
-  else if (currentState == STATE_UNCONNECTED) blinkInterval = 1000; 
+  if (currentState == STATE_ALERT_ROCKETS)
+    blinkInterval = 500;
+  else if (currentState == STATE_UNCONNECTED)
+    blinkInterval = 1000;
 
-  if (millis() - lastLedUpdate >= blinkInterval) {
+  if (millis() - lastLedUpdate >= blinkInterval)
+  {
     lastLedUpdate = millis();
-    ledState = !ledState; 
+    ledState = !ledState;
 
-    for (int i = 0; i < NUM_LEDS; i++) {
-      switch (currentState) {
-        case STATE_UNCONNECTED:
-          if (ledState) strip.setPixelColor(i, strip.Color(0, 0, 120));
-          else strip.setPixelColor(i, strip.Color(0, 0, 60));
-          break;
+    for (int i = 0; i < NUM_LEDS; i++)
+    {
+      switch (currentState)
+      {
+      case STATE_UNCONNECTED:
+        if (ledState)
+          strip.setPixelColor(i, strip.Color(0, 0, 120));
+        else
+          strip.setPixelColor(i, strip.Color(0, 0, 60));
+        break;
 
-        case STATE_NO_ALERTS:
-          strip.setPixelColor(i, strip.Color(0, 0, 0)); 
-          break;
-          
-        case STATE_ALERT_ROCKETS:
-          if (ledState) strip.setPixelColor(i, strip.Color(100, 0, 0));
-          else strip.setPixelColor(i, strip.Color(20, 0, 0));
-          break;
-          
-        case STATE_ALERT_GENERAL:
-          if (ledState) strip.setPixelColor(i, strip.Color(30, 15, 30));
-          else strip.setPixelColor(i, strip.Color(60, 0, 0));
-          break;
+      case STATE_NO_ALERTS:
+        strip.setPixelColor(i, strip.Color(0, 1, 0));
+        break;
 
-        case STATE_EVENT_ENDED:
+      case STATE_WARNING:
+        strip.setPixelColor(i, strip.Color(255, 255, 0));
+        break;
+      case STATE_ALERT_ROCKETS:
+        if (ledState)
+          strip.setPixelColor(i, strip.Color(100, 0, 0));
+        else
+          strip.setPixelColor(i, strip.Color(20, 0, 0));
+        break;
+
+      case STATE_ALERT_GENERAL:
+        if (ledState)
+          strip.setPixelColor(i, strip.Color(30, 15, 30));
+        else
+          strip.setPixelColor(i, strip.Color(60, 0, 0));
+        break;
+
+      case STATE_EVENT_ENDED:
+        if (ledState)
           strip.setPixelColor(i, strip.Color(0, 255, 0));
-          break;
+        else
+          strip.setPixelColor(i, strip.Color(0, 50, 0));
+        break;
       }
     }
     strip.show();
   }
 }
-
 
 // ==========================================
 // 4. פונקציית ניהול הזמזם (Buzzer)
@@ -234,37 +364,60 @@ const int ledcChannel = 0;
 const int resolution = 8;
 const int freq = 2000;
 
-
-void operateBuzzer() {
+void operateBuzzer()
+{
   static unsigned long lastBuzzerUpdate = 0;
   static bool buzzerState = false;
-  
+
   unsigned long buzzInterval = (currentState == STATE_ALERT_ROCKETS) ? 500 : 1000;
 
-  if (currentState == STATE_NO_ALERTS || currentState == STATE_EVENT_ENDED || currentState == STATE_UNCONNECTED) {
+  if (currentState == STATE_NO_ALERTS || currentState == STATE_EVENT_ENDED || currentState == STATE_UNCONNECTED)
+  {
     ledcWriteTone(ledcChannel, 0);
     return;
   }
 
-  if (millis() - lastBuzzerUpdate >= buzzInterval) {
+  if (millis() - lastBuzzerUpdate >= buzzInterval)
+  {
     lastBuzzerUpdate = millis();
     buzzerState = !buzzerState;
     ledcWriteTone(ledcChannel, buzzerState ? 1000 : 0);
   }
 }
 
+static unsigned long lastWiFiAttempt = 0;
+void connectToWifiIfNeeded()
+{
+  if (WiFi.status() != WL_CONNECTED)
+  {
+    Serial.println("WiFi unconnected.");
+    if (millis() - lastWiFiAttempt >= 2000)
+    {
+      lastWiFiAttempt = millis();
+      Serial.println("Attempting to reconnect...");
+      currentState = STATE_UNCONNECTED;
 
+      WiFi.disconnect();
+      delay(100);       // השהייה קטנטנה שמאפשרת לאנטנה להתנתק באמת
+      WiFi.reconnect(); // פקודה נקייה יותר מ-begin שמאלצת חיבור מחדש
+      delay(1000); 
+    }
+  }
+}
 // ==========================================
 // SETUP & LOOP
 // ==========================================
 
-void setup() {
+void setup()
+{
   Serial.begin(115200);
+
   
-  //define buzzer
+
+  // define buzzer
   ledcSetup(ledcChannel, freq, resolution);
   ledcAttachPin(buzzerPin, ledcChannel);
-  //test buzzer
+  // test buzzer
   ledcWriteTone(ledcChannel, 1000);
   delay(1000);
   ledcWriteTone(ledcChannel, 0);
@@ -275,108 +428,118 @@ void setup() {
   strip.setPixelColor(2, strip.Color(0, 0, 255));
   strip.show();
 
-
   Serial.printf("connect to %s WiFi \n\n", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  delay(1000);
 
   Serial.printf("area of interest -  %s\n", MY_AREA.c_str());
 
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  Serial.print("setup complete at ");
   printLocalTime();
+  Serial.println("----------------------------------------------------------\n");
+
 }
 
-// ==========================================
 // משתני סימולציה
-// ==========================================
-bool simulation = false;
-String jsonStr = "";
+// bool simulation = false;
+// String jsonStr = "";
+// void doSimulationStep()
+// {
+//   // ==========================================
+//   // קוד סימולציה להזרקת JSON דרך Serial Monitor
+//   // ==========================================
+//   if (Serial.available() > 0)
+//   {
+//     char inChar = Serial.read();
+//     if (inChar >= '0' && inChar <= '4')
+//     {
+//       simulation = true;
+//       Serial.println("\n==================================");
+//       Serial.printf(">>> SIMULATION MODE ON: Injected JSON #%c\n", inChar);
+//       Serial.println("==================================\n");
+//       String fakeTime = String(millis());
+//       switch (inChar)
+//       {
+//       case '0':
+//         jsonStr = "[]";
+//         break;
+//       case '1':
+//         jsonStr = "[{\"alertDate\":\"" + fakeTime + "\",\"title\":\"ירי רקטות וטילים\",\"data\":\"טל - אל דרום\",\"category\":1}]";
+//         break;
+//       case '2':
+//         jsonStr = "[{\"alertDate\":\"" + fakeTime + "\",\"title\":\"ירי רקטות וטילים\",\"data\":\"טל - אל\",\"category\":1}]";
+//         break;
+//       case '3':
+//         jsonStr = "[{\"alertDate\":\"" + fakeTime + "\",\"title\":\"חדירת כלי טיס עוין\",\"data\":\"טל - אל\",\"category\":2}]";
+//         break;
+//       case '4':
+//         jsonStr = "[{\"alertDate\":\"" + fakeTime + "\",\"title\":\"האירוע הסתיים\",\"data\":\"טל - אל\",\"category\":13}]";
+//         break;
+//       }
+//     }
+//     else if (inChar == '9')
+//     {
+//       simulation = false;
+//       Serial.println("\n==================================");
+//       Serial.println(">>> SIMULATION MODE OFF: Returning to Live API");
+//       Serial.println("==================================\n");
+//     }
+//   }
+// }
+
 int networkErrorCount = 0; // מונה שגיאות רשת ברצף
-
-
-void loop() {
-  // ==========================================
-  // קוד סימולציה להזרקת JSON דרך Serial Monitor
-  // ==========================================
-  if (Serial.available() > 0) {
-    char inChar = Serial.read();
-    
-    if (inChar >= '0' && inChar <= '4') {
-      simulation = true;
-      Serial.println("\n==================================");
-      Serial.printf(">>> SIMULATION MODE ON: Injected JSON #%c\n", inChar);
-      Serial.println("==================================\n");
-      
-      String fakeTime = String(millis()); 
-      
-      switch (inChar) {
-        case '0': jsonStr = "[]"; break;
-        case '1': jsonStr = "[{\"alertDate\":\"" + fakeTime + "\",\"title\":\"ירי רקטות וטילים\",\"data\":\"טל - אל דרום\",\"category\":1}]"; break;
-        case '2': jsonStr = "[{\"alertDate\":\"" + fakeTime + "\",\"title\":\"ירי רקטות וטילים\",\"data\":\"טל - אל\",\"category\":1}]"; break;
-        case '3': jsonStr = "[{\"alertDate\":\"" + fakeTime + "\",\"title\":\"חדירת כלי טיס עוין\",\"data\":\"טל - אל\",\"category\":2}]"; break;
-        case '4': jsonStr = "[{\"alertDate\":\"" + fakeTime + "\",\"title\":\"האירוע הסתיים\",\"data\":\"טל - אל\",\"category\":13}]"; break;
-      }
-    } 
-    else if (inChar == '9') {
-      simulation = false;
-      Serial.println("\n==================================");
-      Serial.println(">>> SIMULATION MODE OFF: Returning to Live API");
-      Serial.println("==================================\n");
-    }
-  }
-
+unsigned long API_CHECK_INTERVAL = 5000;
   // --- משתני זמן גלובליים בתוך הלופ ---
-  static unsigned long lastWiFiAttempt = 0;
-  static unsigned long lastApiCheck = 0;
-  const unsigned long API_CHECK_INTERVAL = 5000; // 10 seconds delay
+  
+static unsigned long lastApiCheck = 0;
+void loop()
+{
+  API_CHECK_INTERVAL = (currentState == STATE_NO_ALERTS) ? 5000 : 1000;
 
-  // ==========================================
-  // מנגנון התאוששות רשת (Auto-Recovery)
-  // ==========================================
-  if (WiFi.status() != WL_CONNECTED && !simulation) {
-    if (millis() - lastWiFiAttempt >= 2000) {
-      lastWiFiAttempt = millis();
-      Serial.println("WiFi connection lost! Attempting to reconnect...");
-      currentState = STATE_UNCONNECTED; 
-      
-      WiFi.disconnect();
-      delay(100); // השהייה קטנטנה שמאפשרת לאנטנה להתנתק באמת
-      WiFi.reconnect(); // פקודה נקייה יותר מ-begin שמאלצת חיבור מחדש
-    }
-  }
+  connectToWifiIfNeeded();
 
   // --- 1. טיימר למשיכת נתונים כל כמה שניות ---
-  if (millis() - lastApiCheck >= API_CHECK_INTERVAL) {
+  if (millis() - lastApiCheck >= API_CHECK_INTERVAL)
+  {
     lastApiCheck = millis();
-    
-    if (WiFi.status() == WL_CONNECTED || simulation) {
-      String jsonPayload = simulation ? jsonStr : fetchAlertJson();
-      
-      if (jsonPayload == "ERROR" && !simulation) {
+
+    if (WiFi.status() == WL_CONNECTED /*|| simulation*/)
+    {
+      String jsonPayload = fetchAlertJson();
+      //Serial.printf("---> %s\n", jsonPayload.c_str());
+
+      if (jsonPayload == "ERROR" )
+      {
+        
         networkErrorCount++;
         Serial.printf("Network error count: %d\n", networkErrorCount);
-        
-        if (networkErrorCount >= 3) {
+
+        if (networkErrorCount >= 3)
+        {
           Serial.println(">>> Too many network errors. Forcing HARD WiFi Reset...");
           currentState = STATE_UNCONNECTED;
-          
+
           WiFi.disconnect(true); // ניתוק אגרסיבי כולל מחיקת הגדרות זמניות
-          delay(200); 
+          delay(200);
           WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-          delay(1000); 
-          if (WiFi.status() == WL_CONNECTED) {
-            networkErrorCount = 0; 
-            lastWiFiAttempt = millis(); 
+          delay(1000);
+          if (WiFi.status() == WL_CONNECTED)
+          {
+            networkErrorCount = 0;
+            lastWiFiAttempt = millis();
             // אנחנו נאפס גם את זמן בדיקת ה-API כדי שלא ינסה לבדוק מיד לפני שהרשת קמה
-            lastApiCheck = millis(); 
+            lastApiCheck = millis();
           }
-
-          if (networkErrorCount>10){
-            //ESP.reset() 
-            ESP.restart(); 
+          if (networkErrorCount > 10)
+          {
+            // ESP.reset()
+            ESP.restart();
           }
-
         }
-      } else {
+      }
+      else
+      {
         networkErrorCount = 0;
         parseAlertJsonAndUpdateState(jsonPayload);
       }
@@ -384,8 +547,10 @@ void loop() {
   }
 
   // --- 2. טיפול במצב סיום אירוע ---
-  if (currentState == STATE_EVENT_ENDED) {
-    if (millis() - eventEndedStartTime > 30000) { 
+  if (currentState == STATE_EVENT_ENDED)
+  {
+    if (millis() - eventEndedStartTime > 30000)
+    {
       currentState = STATE_NO_ALERTS;
       Serial.println(">>> Return to Normal Routine (STATE_NO_ALERTS).");
     }
@@ -393,5 +558,6 @@ void loop() {
 
   // --- 3. עדכון החומרה ---
   operateLEDs();
-  operateBuzzer();
+  // operateBuzzer();
+
 }
