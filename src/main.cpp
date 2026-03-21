@@ -245,7 +245,7 @@ String fetchAlertJson()
 
       Serial.print("%");
       // Read the stream byte-by-byte
-      while (stream.connected())
+      while (stream.connected() || stream.available())
       {
         if (stream.available())
         {
@@ -301,6 +301,7 @@ String fetchAlertJson()
 
                 // }
                 payload = currentObject;
+                //Serial.printf(">>> found relevant jsonobject - object #: %d\n", count);
                 break; // Stop reading more objects since we found a relevant one
               }
 
@@ -312,7 +313,7 @@ String fetchAlertJson()
         }
       }
       //Serial.printf("stream available %d , stream connected %d\n", stream.available(), stream.connected());
-      Serial.printf(">>> Finished reading stream. Total objects read: %d\n", count);
+      //Serial.printf(">>> Finished reading stream. Total objects read: %d\n", count);
     }
     else
     {
