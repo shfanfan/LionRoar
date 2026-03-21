@@ -4,6 +4,7 @@
 #include <ArduinoJson.h>
 #include <Adafruit_NeoPixel.h>
 #include <LittleFS.h>
+#include <ArduinoOTA.h>
 
 // ==========================================
 // הגדרות כלליות ורשת
@@ -430,9 +431,25 @@ void connectToWifiIfNeeded()
     }
   }
 }
-// ==========================================
-// SETUP & LOOP
-// ==========================================
+
+
+void setupOTA() {
+  ArduinoOTA.setHostname("esp32-lion-roar");
+
+  // These are just optional callbacks to print the update progress to the Serial monitor
+  ArduinoOTA.onStart([]() { Serial.println("\n--- OTA Update Starting ---"); });
+  ArduinoOTA.onEnd([]() { Serial.println("\n--- OTA Update Complete ---"); });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
+    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
+  });
+  ArduinoOTA.onError([](ota_error_t error) {
+    Serial.printf("Error[%u]: ", error);
+  });
+
+  // Start the OTA service
+  ArduinoOTA.begin();
+  Serial.println("OTA Service Started. Ready for remote uploads.");
+}
 
 void setup()
 {
@@ -447,6 +464,7 @@ void setup()
     Serial.println(">>> Config loaded successfully:");
   }
 
+  
 
   // define buzzer
   ledcSetup(ledcChannel, freq, resolution);
@@ -465,6 +483,12 @@ void setup()
   Serial.printf("connect to %s WiFi \n\n", wifiSsid.c_str());
   WiFi.begin(wifiSsid.c_str(), wifiPassword);
   delay(1000);
+
+  Serial.print("ESP32 IP Address: ");
+  Serial.println(WiFi.localIP());
+  
+  //to have most fastest wifi. power hungry - disable if on battery use:
+  setupOTA();
 
   Serial.printf("area of interest -  %s\n", area.c_str());
 
@@ -530,8 +554,8 @@ static unsigned long lastApiCheck = 0;
 void loop()
 {
   API_CHECK_INTERVAL = (currentState == STATE_NO_ALERTS) ? 5000 : 1000;
-
   connectToWifiIfNeeded();
+  ArduinoOTA.handle();
 
   // --- 1. טיימר למשיכת נתונים כל כמה שניות ---
   if (millis() - lastApiCheck >= API_CHECK_INTERVAL)
