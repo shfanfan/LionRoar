@@ -3,25 +3,21 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <Adafruit_NeoPixel.h>
+#include <LittleFS.h>
 
 // ==========================================
 // הגדרות כלליות ורשת
 // ==========================================
-const char *WIFI_SSID = "Harari";
-const char *WIFI_PASSWORD = "10203040";
+String wifiSsid = "empty ssid";
+String wifiPassword = "wrong password";
 // --- NTP Server Settings ---
 const char *ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = 0;     // Replace with your timezone offset in seconds (e.g., -18000 for EST)
 const int daylightOffset_sec = 0; // Set to 3600 if your timezone observes daylight saving time
 
 // שם האיזור
-const String MY_AREA = "טל - אל" ;
-//const String MY_AREA = "נס הרים";
-// const String MY_AREA = "קריית שמונה";
-// const String MY_AREA = "מרגל";
-//  ==========================================
-//  הגדרת מכונת המצבים (State Machine)
-//  ==========================================
+String area = "הוגוורטס";
+
 enum AlertState
 {
   STATE_UNCONNECTED,   // מצב התחלתי - ממתין לנתונים ראשונים מהשרת
@@ -38,7 +34,46 @@ unsigned long eventEndedStartTime = 0; // טיימר למצב סיום אירו�
 // משתנה חדש: שמירת תאריך ההתראה האחרונה כדי לא להפעיל אזעקות על אירועי עבר
 String lastAlertDate = "";
 
-// --- Function to fetch and print time ---
+bool getDataFromFile() {
+  Serial.println("Initializing File System and reading config...");
+
+  // 1. Mount LittleFS
+  if (!LittleFS.begin(true)) {
+    Serial.println("Error: Failed to mount LittleFS.");
+    return false; // Return false if it fails
+  }
+
+  // 2. Open the config file
+  File file = LittleFS.open("/config.json", "r");
+  if (!file) {
+    Serial.println("Error: Failed to open config.json.");
+    return false; 
+  }
+
+  // 3. Parse the JSON
+  JsonDocument doc;
+  DeserializationError error = deserializeJson(doc, file);
+
+  // 4. Handle parsing errors
+  if (error) {
+    Serial.print("Error: Failed to parse config file: ");
+    Serial.println(error.f_str());
+    file.close();
+    return false;
+  }
+
+  // 5. Extract values into global variables with safe fallbacks
+  area = doc["area"] | "Unknown_Area";
+  wifiSsid = doc["wifi_ssid"] | "Your_SSID";
+  wifiPassword = doc["wifi_password"] | "your_password";
+
+  // Close the file to free up memory
+  file.close();
+  
+  // If we made it this far, everything worked perfectly!
+  return true; 
+}
+
 void printLocalTime()
 {
   struct tm timeinfo;
@@ -53,10 +88,6 @@ void printLocalTime()
   // Print the time to the serial monitor in a readable format
   Serial.println(&timeinfo, "network time: %Y-%m-%d %H:%M:%S ");
 }
-
-// ==========================================
-// 2. פונקציית פענוח ה-JSON ועדכון המצב
-// ==========================================
 
 bool parseAlertJsonAndUpdateState(String jsonPayload)
 {
@@ -110,7 +141,7 @@ bool parseAlertJsonAndUpdateState(String jsonPayload)
 
   // Serial.printf("\n>>> Checking alert for city: %s - %s \n", city.c_str(), city.startsWith(MY_AREA) ? "MATCH!" : "no match");
 
-  if (city.startsWith(MY_AREA))
+  if (city.startsWith(area.c_str()))
   {
     String currentAlertDate = doc["alertDate"].as<String>();
     int category = doc["category"].as<int>();
@@ -174,9 +205,6 @@ bool parseAlertJsonAndUpdateState(String jsonPayload)
   return res;
 }
 
-// ==========================================
-// 1. פונקציית משיכת ה-JSON מהשרת
-// ==========================================
 const char *SERVER_URL = "https://www.oref.org.il/warningMessages/alert/History/AlertsHistory.json";
 
 String fetchAlertJson()
@@ -239,7 +267,7 @@ String fetchAlertJson()
               // Serial.println(currentObject);
               // QUICK FILTER: Does this raw string even contain our target?
               // This saves us from running the JSON parser on every single object.
-              if (currentObject.indexOf(MY_AREA) > 0)
+              if (currentObject.indexOf(area.c_str()) > 0)
               {
                 // Serial.println("\n>>> Found a JSON object containing our area! Parsing this object:");
                 // Serial.println("--------------------------------------------------");
@@ -284,9 +312,7 @@ String fetchAlertJson()
   return payload;
 }
 
-// ==========================================
-// 3. פונקציית ניהול הלדים (Addressable LED)
-// ==========================================
+
 #ifndef LED_PIN
 #define LED_PIN 48
 #endif
@@ -390,7 +416,7 @@ void connectToWifiIfNeeded()
 {
   if (WiFi.status() != WL_CONNECTED)
   {
-    Serial.println("WiFi unconnected.");
+    //Serial.println("WiFi unconnected.");
     if (millis() - lastWiFiAttempt >= 2000)
     {
       lastWiFiAttempt = millis();
@@ -412,7 +438,15 @@ void setup()
 {
   Serial.begin(115200);
 
-  
+  if (!getDataFromFile())
+  {
+    Serial.println(">>> Failed to read config from file. Using default values.");
+  }
+  else
+  {
+    Serial.println(">>> Config loaded successfully:");
+  }
+
 
   // define buzzer
   ledcSetup(ledcChannel, freq, resolution);
@@ -428,11 +462,11 @@ void setup()
   strip.setPixelColor(2, strip.Color(0, 0, 255));
   strip.show();
 
-  Serial.printf("connect to %s WiFi \n\n", WIFI_SSID);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.printf("connect to %s WiFi \n\n", wifiSsid.c_str());
+  WiFi.begin(wifiSsid.c_str(), wifiPassword);
   delay(1000);
 
-  Serial.printf("area of interest -  %s\n", MY_AREA.c_str());
+  Serial.printf("area of interest -  %s\n", area.c_str());
 
   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
   Serial.print("setup complete at ");
@@ -511,10 +545,10 @@ void loop()
 
       if (jsonPayload == "ERROR" )
       {
-        
         networkErrorCount++;
         Serial.printf("Network error count: %d\n", networkErrorCount);
 
+        //TODO: consider calling connectToWifiIfNeeded()
         if (networkErrorCount >= 3)
         {
           Serial.println(">>> Too many network errors. Forcing HARD WiFi Reset...");
@@ -522,7 +556,7 @@ void loop()
 
           WiFi.disconnect(true); // ניתוק אגרסיבי כולל מחיקת הגדרות זמניות
           delay(200);
-          WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+          WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
           delay(1000);
           if (WiFi.status() == WL_CONNECTED)
           {
