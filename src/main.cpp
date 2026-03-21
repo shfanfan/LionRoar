@@ -35,20 +35,23 @@ unsigned long eventEndedStartTime = 0; // טיימר למצב סיום אירו�
 // משתנה חדש: שמירת תאריך ההתראה האחרונה כדי לא להפעיל אזעקות על אירועי עבר
 String lastAlertDate = "";
 
-bool getDataFromFile() {
+bool getDataFromFile()
+{
   Serial.println("Initializing File System and reading config...");
 
   // 1. Mount LittleFS
-  if (!LittleFS.begin(true)) {
+  if (!LittleFS.begin(true))
+  {
     Serial.println("Error: Failed to mount LittleFS.");
     return false; // Return false if it fails
   }
 
   // 2. Open the config file
   File file = LittleFS.open("/config.json", "r");
-  if (!file) {
+  if (!file)
+  {
     Serial.println("Error: Failed to open config.json.");
-    return false; 
+    return false;
   }
 
   // 3. Parse the JSON
@@ -56,7 +59,8 @@ bool getDataFromFile() {
   DeserializationError error = deserializeJson(doc, file);
 
   // 4. Handle parsing errors
-  if (error) {
+  if (error)
+  {
     Serial.print("Error: Failed to parse config file: ");
     Serial.println(error.f_str());
     file.close();
@@ -70,9 +74,9 @@ bool getDataFromFile() {
 
   // Close the file to free up memory
   file.close();
-  
+
   // If we made it this far, everything worked perfectly!
-  return true; 
+  return true;
 }
 
 void printLocalTime()
@@ -92,7 +96,7 @@ void printLocalTime()
 
 bool parseAlertJsonAndUpdateState(String jsonPayload)
 {
-  //Serial.printf("parseAlertJsonAndUpdateState - parsing JSON: %s\n\n", jsonPayload.c_str());
+  // Serial.printf("parseAlertJsonAndUpdateState - parsing JSON: %s\n\n", jsonPayload.c_str());
 
   bool res = false;
   // 1. טיפול בשגיאת תקשורת
@@ -225,6 +229,7 @@ String fetchAlertJson()
     http.addHeader("X-Requested-With", "XMLHttpRequest");
     http.addHeader("Connection", "close");
 
+    int count = 0;
     int httpCode = http.GET();
     if (httpCode == HTTP_CODE_OK)
     {
@@ -240,8 +245,10 @@ String fetchAlertJson()
 
       Serial.print("%");
       // Read the stream byte-by-byte
-      while (stream.connected() && stream.available())
+      while (stream.connected())
       {
+        if (stream.available())
+        {
           char c = stream.read();
 
           // Track when an object starts and handles nested braces
@@ -264,15 +271,18 @@ String fetchAlertJson()
 
             if (braceCount == 0)
             {
+              count++;
               // We now have ONE complete object in the currentObject string.
-              // Serial.println(currentObject);
+              // Serial.print(currentObject);
+              // Serial.println(";");
               // QUICK FILTER: Does this raw string even contain our target?
               // This saves us from running the JSON parser on every single object.
               if (currentObject.indexOf(area.c_str()) > 0)
               {
                 // Serial.println("\n>>> Found a JSON object containing our area! Parsing this object:");
-                // Serial.println("--------------------------------------------------");
-                // Serial.println(currentObject);
+              
+                // Serial.printf("------------------object #%05d--------------------\n", count);
+                // Serial.print(currentObject);
                 // Serial.println("--------------------------------------------------");
                 // // We have a match! Now we safely parse just this one small object.
                 // StaticJsonDocument<512> doc;
@@ -299,7 +309,10 @@ String fetchAlertJson()
               inObject = false;
             }
           }
+        }
       }
+      //Serial.printf("stream available %d , stream connected %d\n", stream.available(), stream.connected());
+      Serial.printf(">>> Finished reading stream. Total objects read: %d\n", count);
     }
     else
     {
@@ -312,7 +325,6 @@ String fetchAlertJson()
 
   return payload;
 }
-
 
 #ifndef LED_PIN
 #define LED_PIN 48
@@ -417,7 +429,7 @@ void connectToWifiIfNeeded()
 {
   if (WiFi.status() != WL_CONNECTED)
   {
-    //Serial.println("WiFi unconnected.");
+    // Serial.println("WiFi unconnected.");
     if (millis() - lastWiFiAttempt >= 2000)
     {
       lastWiFiAttempt = millis();
@@ -427,24 +439,24 @@ void connectToWifiIfNeeded()
       WiFi.disconnect();
       delay(100);       // השהייה קטנטנה שמאפשרת לאנטנה להתנתק באמת
       WiFi.reconnect(); // פקודה נקייה יותר מ-begin שמאלצת חיבור מחדש
-      delay(1000); 
+      delay(1000);
     }
   }
 }
 
-
-void setupOTA() {
+void setupOTA()
+{
   ArduinoOTA.setHostname("esp32-lion-roar");
 
   // These are just optional callbacks to print the update progress to the Serial monitor
-  ArduinoOTA.onStart([]() { Serial.println("\n--- OTA Update Starting ---"); });
-  ArduinoOTA.onEnd([]() { Serial.println("\n--- OTA Update Complete ---"); });
-  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total) {
-    Serial.printf("Progress: %u%%\r", (progress / (total / 100)));
-  });
-  ArduinoOTA.onError([](ota_error_t error) {
-    Serial.printf("Error[%u]: ", error);
-  });
+  ArduinoOTA.onStart([]()
+                     { Serial.println("\n--- OTA Update Starting ---"); });
+  ArduinoOTA.onEnd([]()
+                   { Serial.println("\n--- OTA Update Complete ---"); });
+  ArduinoOTA.onProgress([](unsigned int progress, unsigned int total)
+                        { Serial.printf("Progress: %u%%\r", (progress / (total / 100))); });
+  ArduinoOTA.onError([](ota_error_t error)
+                     { Serial.printf("Error[%u]: ", error); });
 
   // Start the OTA service
   ArduinoOTA.begin();
@@ -463,8 +475,6 @@ void setup()
   {
     Serial.println(">>> Config loaded successfully:");
   }
-
-  
 
   // define buzzer
   ledcSetup(ledcChannel, freq, resolution);
@@ -486,8 +496,8 @@ void setup()
 
   Serial.print("ESP32 IP Address: ");
   Serial.println(WiFi.localIP());
-  
-  //to have most fastest wifi. power hungry - disable if on battery use:
+
+  // to have most fastest wifi. power hungry - disable if on battery use:
   setupOTA();
 
   Serial.printf("area of interest -  %s\n", area.c_str());
@@ -496,7 +506,6 @@ void setup()
   Serial.print("setup complete at ");
   printLocalTime();
   Serial.println("----------------------------------------------------------\n");
-
 }
 
 // משתני סימולציה
@@ -548,8 +557,8 @@ void setup()
 
 int networkErrorCount = 0; // מונה שגיאות רשת ברצף
 unsigned long API_CHECK_INTERVAL = 5000;
-  // --- משתני זמן גלובליים בתוך הלופ ---
-  
+// --- משתני זמן גלובליים בתוך הלופ ---
+
 static unsigned long lastApiCheck = 0;
 void loop()
 {
@@ -565,14 +574,14 @@ void loop()
     if (WiFi.status() == WL_CONNECTED /*|| simulation*/)
     {
       String jsonPayload = fetchAlertJson();
-      //Serial.printf("---> %s\n", jsonPayload.c_str());
+      // Serial.printf("---> %s\n", jsonPayload.c_str());
 
-      if (jsonPayload == "ERROR" )
+      if (jsonPayload == "ERROR")
       {
         networkErrorCount++;
         Serial.printf("Network error count: %d\n", networkErrorCount);
 
-        //TODO: consider calling connectToWifiIfNeeded()
+        // TODO: consider calling connectToWifiIfNeeded()
         if (networkErrorCount >= 3)
         {
           Serial.println(">>> Too many network errors. Forcing HARD WiFi Reset...");
@@ -617,5 +626,4 @@ void loop()
   // --- 3. עדכון החומרה ---
   operateLEDs();
   // operateBuzzer();
-
 }
