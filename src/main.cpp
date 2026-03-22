@@ -341,7 +341,7 @@ String fetchAlertJson()
     client.stop(); // <--- משחרר את חיבור הרשת ומונע קריסת DNS!
   }
 
-  // Serial.printf(">>> fetchAlertJson - received payload: %s\n\n", payload.c_str());
+  //Serial.printf(">>> fetchAlertJson - received payload: %s\n\n", payload.c_str());
   return payload;
 }
 
