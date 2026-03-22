@@ -244,9 +244,15 @@ String fetchAlertJson()
       bool inObject = false;
 
       Serial.print("%");
+
+      // Set a timeout limit (e.g., 50 milliseconds)
+      const unsigned long TIMEOUT_MS = 50;
+      unsigned long lastDataTime = millis();
+
       // Read the stream byte-by-byte
-      while (stream.connected() || stream.available())
+      while (stream.connected())
       {
+        // Serial.printf("stream available %d , stream connected %d\n", stream.available(), stream.connected());
         if (stream.available())
         {
           char c = stream.read();
@@ -280,7 +286,7 @@ String fetchAlertJson()
               if (currentObject.indexOf(area.c_str()) > 0)
               {
                 // Serial.println("\n>>> Found a JSON object containing our area! Parsing this object:");
-              
+
                 // Serial.printf("------------------object #%05d--------------------\n", count);
                 // Serial.print(currentObject);
                 // Serial.println("--------------------------------------------------");
@@ -301,7 +307,7 @@ String fetchAlertJson()
 
                 // }
                 payload = currentObject;
-                //Serial.printf(">>> found relevant jsonobject - object #: %d\n", count);
+                // Serial.printf(">>> found relevant jsonobject - object #: %d\n", count);
                 break; // Stop reading more objects since we found a relevant one
               }
 
@@ -310,10 +316,21 @@ String fetchAlertJson()
               inObject = false;
             }
           }
+          lastDataTime = millis();
+        }
+        else
+        {
+          // No data available right now. Have we waited too long?
+          if (millis() - lastDataTime > TIMEOUT_MS)
+          {
+            break; // We've waited long enough. Exit the loop.
+          }
+          // CRITICAL: A tiny delay to prevent the ESP32 from crashing
+          delay(1);
         }
       }
-      //Serial.printf("stream available %d , stream connected %d\n", stream.available(), stream.connected());
-      //Serial.printf(">>> Finished reading stream. Total objects read: %d\n", count);
+      // Serial.printf("stream available %d , stream connected %d\n", stream.available(), stream.connected());
+      // Serial.printf(">>> Finished reading stream. Total objects read: %d\n", count);
     }
     else
     {
@@ -324,6 +341,7 @@ String fetchAlertJson()
     client.stop(); // <--- משחרר את חיבור הרשת ומונע קריסת DNS!
   }
 
+  // Serial.printf(">>> fetchAlertJson - received payload: %s\n\n", payload.c_str());
   return payload;
 }
 
@@ -445,9 +463,13 @@ void connectToWifiIfNeeded()
   }
 }
 
+#ifndef DEVICE_HOSTNAME
+#define DEVICE_HOSTNAME "lion-roar_test" // Fallback just in case
+#endif
+
 void setupOTA()
 {
-  ArduinoOTA.setHostname("esp32-lion-roar");
+  ArduinoOTA.setHostname(DEVICE_HOSTNAME);
 
   // These are just optional callbacks to print the update progress to the Serial monitor
   ArduinoOTA.onStart([]()
@@ -486,9 +508,9 @@ void setup()
   ledcWriteTone(ledcChannel, 0);
 
   strip.begin();
-  strip.setPixelColor(0, strip.Color(255, 0, 0));
+  strip.setPixelColor(2, strip.Color(255, 0, 0));
   strip.setPixelColor(1, strip.Color(0, 255, 0));
-  strip.setPixelColor(2, strip.Color(0, 0, 255));
+  strip.setPixelColor(0, strip.Color(0, 0, 255));
   strip.show();
 
   Serial.printf("connect to %s WiFi \n\n", wifiSsid.c_str());
@@ -575,10 +597,12 @@ void loop()
     if (WiFi.status() == WL_CONNECTED /*|| simulation*/)
     {
       String jsonPayload = fetchAlertJson();
+
       // Serial.printf("---> %s\n", jsonPayload.c_str());
 
       if (jsonPayload == "ERROR")
       {
+
         networkErrorCount++;
         Serial.printf("Network error count: %d\n", networkErrorCount);
 
