@@ -29,6 +29,8 @@ enum AlertState
   STATE_EVENT_ENDED    // סיום אירוע (מצב זמני שמוצג אחרי שההתרעה יורדת)
 };
 
+int networkErrorCount = 0; // מונה שגיאות רשת ברצף
+int MajorNetworkErrorRecoveryCount = 0; // סף לשגיאה חמורה שתוביל לריסט
 AlertState currentState = STATE_UNCONNECTED;
 unsigned long eventEndedStartTime = 0; // טיימר למצב סיום אירוע
 
@@ -285,12 +287,12 @@ String fetchAlertJson()
               // This saves us from running the JSON parser on every single object.
               if (currentObject.indexOf(area.c_str()) > 0)
               {
-                // Serial.println("\n>>> Found a JSON object containing our area! Parsing this object:");
+                Serial.println("\n>>> Found a JSON object containing our area! Parsing this object:");
 
-                // Serial.printf("------------------object #%05d--------------------\n", count);
-                // Serial.print(currentObject);
-                // Serial.println("--------------------------------------------------");
-                // // We have a match! Now we safely parse just this one small object.
+                Serial.printf("------------------object #%05d--------------------\n", count);
+                Serial.print(currentObject);
+                Serial.println("--------------------------------------------------");
+                // We have a match! Now we safely parse just this one small object.
                 // StaticJsonDocument<512> doc;
                 // DeserializationError error = deserializeJson(doc, currentObject);
 
@@ -329,8 +331,9 @@ String fetchAlertJson()
           delay(1);
         }
       }
-      // Serial.printf("stream available %d , stream connected %d\n", stream.available(), stream.connected());
-      // Serial.printf(">>> Finished reading stream. Total objects read: %d\n", count);
+      Serial.printf("stream available %d , stream connected %d\n", stream.available(), stream.connected());
+      //Serial.printf(">>> Finished reading stream. Total objects read: %d\n", count);
+      stream.stop();
     }
     else
     {
@@ -349,7 +352,7 @@ String fetchAlertJson()
 #define LED_PIN 48
 #endif
 
-#define NUM_LEDS 10
+#define NUM_LEDS 15
 Adafruit_NeoPixel strip(NUM_LEDS, LED_PIN, NEO_GRB + NEO_KHZ800);
 
 void operateLEDs()
@@ -413,15 +416,10 @@ void operateLEDs()
   }
 }
 
-// ==========================================
-// 4. פונקציית ניהול הזמזם (Buzzer)
-// ==========================================
-
 const int buzzerPin = 5;
 const int ledcChannel = 0;
 const int resolution = 8;
 const int freq = 2000;
-
 void operateBuzzer()
 {
   static unsigned long lastBuzzerUpdate = 0;
@@ -578,10 +576,7 @@ void setup()
 //   }
 // }
 
-int networkErrorCount = 0; // מונה שגיאות רשת ברצף
 unsigned long API_CHECK_INTERVAL = 5000;
-// --- משתני זמן גלובליים בתוך הלופ ---
-
 static unsigned long lastApiCheck = 0;
 void loop()
 {
@@ -599,12 +594,11 @@ void loop()
       String jsonPayload = fetchAlertJson();
 
       // Serial.printf("---> %s\n", jsonPayload.c_str());
-
+      // comm error:
       if (jsonPayload == "ERROR")
       {
-
         networkErrorCount++;
-        Serial.printf("Network error count: %d\n", networkErrorCount);
+        Serial.printf("Network error count: %d, network recovery events count: %d\n", networkErrorCount, MajorNetworkErrorRecoveryCount);
 
         // TODO: consider calling connectToWifiIfNeeded()
         if (networkErrorCount >= 3)
@@ -618,12 +612,12 @@ void loop()
           delay(1000);
           if (WiFi.status() == WL_CONNECTED)
           {
-            networkErrorCount = 0;
+            MajorNetworkErrorRecoveryCount++;
             lastWiFiAttempt = millis();
             // אנחנו נאפס גם את זמן בדיקת ה-API כדי שלא ינסה לבדוק מיד לפני שהרשת קמה
             lastApiCheck = millis();
           }
-          if (networkErrorCount > 10)
+          if (networkErrorCount > 10 || MajorNetworkErrorRecoveryCount > 5)
           {
             // ESP.reset()
             ESP.restart();
