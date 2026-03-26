@@ -1,0 +1,40 @@
+#include <WiFi.h>
+
+const char* ssid = "Porat_5";
+const char* password = "2030405060";
+
+void setup() {
+  Serial.begin(115200);
+  
+  // Start connection
+  WiFi.begin(ssid, password);
+  Serial.println("\nConnecting");
+
+  // Wait for connection (timeout after 10 seconds)
+  int attempt = 0;
+  while (WiFi.status() != WL_CONNECTED && attempt < 20) {
+    delay(500);
+    Serial.print(".");
+    attempt++;
+  }
+
+  // Check result
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nConnected Successfully!");
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
+    Serial.print("Signal Strength (RSSI): ");
+    Serial.println(WiFi.RSSI());
+  } else {
+    Serial.println("\nConnection Failed. Check credentials or signal.");
+  }
+}
+
+void loop() {
+  // Check if connection is lost during runtime
+  if (WiFi.status() != WL_CONNECTED) {
+    Serial.println("WiFi lost! Reconnecting...");
+    WiFi.begin(ssid, password);
+  }
+  delay(10000);
+}
