@@ -31,6 +31,12 @@
     const char *SERVER_URL = "https://www.oref.org.il/warningMessages/alert/History/AlertsHistory.json";
 #endif
 
+#ifdef LOCALHOST_TESTING
+    WiFiClient client;
+#else
+    WiFiClientSecure client;
+#endif
+
 #ifndef LED_PIN
 #define LED_PIN 48
 #endif
@@ -66,7 +72,7 @@ uint32_t colorEventEndedDim;
 
 #pragma endregion 
 
-unsigned long API_CHECK_INTERVAL = 5000;
+unsigned long apiCheckInterval = 5000;
 
 //state machine states:
 enum AlertState
@@ -296,10 +302,7 @@ String fetchAlertJson()
   {
 
 
-#ifdef LOCALHOST_TESTING
-    WiFiClient client;
-#else
-    WiFiClientSecure client;
+#ifndef LOCALHOST_TESTING
     client.setInsecure(); // דילוג על אימות תעודת SSL
 #endif
 
@@ -310,8 +313,8 @@ String fetchAlertJson()
     http.addHeader("Accept", "application/json, text/plain, */*");
     http.addHeader("Referer", "https://www.oref.org.il/");
     http.addHeader("X-Requested-With", "XMLHttpRequest");
-    http.addHeader("Connection", "close");
-    
+    //http.addHeader("Connection", "close");
+    http.addHeader("Connection", "keep-alive");
 
     int checkedElementsCount = 0;
     int httpCode = http.GET();
@@ -383,7 +386,7 @@ String fetchAlertJson()
               }
 
               // If we are here, it wasn't a match. Clear the buffer for the next object.
-              currentObject = "";
+              currentObject.clear();
               inObject = false;
             }
           }
@@ -409,7 +412,7 @@ String fetchAlertJson()
     }
 
     http.end();
-    client.stop(); // <--- משחרר את חיבור הרשת ומונע קריסת DNS!
+    //client.stop(); // <--- משחרר את חיבור הרשת ומונע קריסת DNS!
   }
 
   //Serial.printf(">>> fetchAlertJson - received payload: %s\n\n", payload.c_str());
@@ -419,12 +422,13 @@ String fetchAlertJson()
 
 void operateLEDs()
 {
+  static uint32_t lastTargetColor = 0;
   static unsigned long lastLedUpdate = 0;
   static bool ledState = false;
 
   // קצב הבהוב משתנה בהתאם למצב
-  unsigned long blinkInterval = 1000;
-  if (currentState == STATE_ALERT_ROCKETS)
+  unsigned long blinkInterval = 2000;
+  if (currentState == STATE_ALERT_ROCKETS || currentState == STATE_ALERT_AIRCRAFT)
     blinkInterval = 500;
   else if (currentState == STATE_UNCONNECTED)
     blinkInterval = 1000;
@@ -433,69 +437,152 @@ void operateLEDs()
   {
     lastLedUpdate = millis();
     ledState = !ledState;
-    uint32_t targetColor = 0;
+  }
 
-    switch (currentState)
-    {
-      case STATE_UNCONNECTED:
-        targetColor = ledState ? colorUnconnected : colorUnconnectedDim;
-        break;
+  uint32_t targetColor = 0;
+  switch (currentState)
+  {
+    case STATE_UNCONNECTED:
+      targetColor = ledState ? colorUnconnected : colorUnconnectedDim;
+      break;
 
-      case STATE_NO_ALERTS:
-        targetColor = colorNoAlerts;
-        break;
+    case STATE_NO_ALERTS:
+      targetColor = colorNoAlerts;
+      break;
 
-      case STATE_WARNING:
-        targetColor = colorWarning;
-        break;
+    case STATE_WARNING:
+      targetColor = colorWarning;
+      break;
 
-      case STATE_ALERT_ROCKETS:
-        targetColor = colorAlertRockets;
-        break;
+    case STATE_ALERT_ROCKETS:
+      targetColor = colorAlertRockets;
+      break;
 
-      case STATE_ALERT_AIRCRAFT:
-        targetColor = ledState ? colorAlertGeneral : colorAlertRockets;
-        break;
+    case STATE_ALERT_AIRCRAFT:
+      targetColor = ledState ? colorAlertGeneral : colorAlertRockets;
+      break;
 
-      case STATE_EVENT_ENDED:
-        targetColor = ledState ? colorEventEnded : colorEventEndedDim;
-        break;
-    }
-
-    // צביעת כל פס הלדים בפקודה אחת במקום בלולאה
+    case STATE_EVENT_ENDED:
+      targetColor = ledState ? colorEventEnded : colorEventEndedDim;
+      break;
+  }
+  if(lastTargetColor!=targetColor){
     strip.fill(targetColor);
     strip.show();
+    lastTargetColor = targetColor;
   }
+  
 }
 
 const int buzzerPin = 5;
-const int vibrationsPin = 6;
 const int ledcChannel = 0;
 const int resolution = 8;
 const int freq = 2000;
 void operateBuzzer()
 {
   static unsigned long lastBuzzerUpdate = 0;
-  static bool buzzerState = false;
+  static bool patternState = false;
+  static AlertState lastHandledState = STATE_UNCONNECTED;
+  static uint32_t lastAppliedFreq = 0; // Keep track of the current hardware output
 
-  unsigned long buzzInterval = (currentState == STATE_ALERT_ROCKETS) ? 500 : 1000;
-
-  if (currentState == STATE_NO_ALERTS || currentState == STATE_EVENT_ENDED || currentState == STATE_UNCONNECTED)
-  {
-    ledcWriteTone(ledcChannel, 0);
-    return;
+  // 1. IMMEDIATE TRIGGER: Detect state change instantly
+  if (currentState != lastHandledState) {
+    lastHandledState = currentState;
+    patternState = true;         // Start with the sound ON
+    lastBuzzerUpdate = millis(); // Reset the pulse timer
   }
 
-  if (millis() - lastBuzzerUpdate >= buzzInterval)
-  {
-    lastBuzzerUpdate = millis();
-    buzzerState = !buzzerState;
-    ledcWriteTone(ledcChannel, buzzerState ? 1000 : 0);
+  unsigned long buzzInterval = 0;
+  uint32_t activeFreq = 1000;    // Standard 1000Hz tone
+
+  // 2. Set the rhythm based on the alert type
+  switch (currentState) {
+    case STATE_ALERT_ROCKETS:
+      buzzInterval = 500;  // Fast beep: 500ms ON / 500ms OFF
+      break;
+    case STATE_ALERT_AIRCRAFT:
+      buzzInterval = 1000; // Slower beep: 1000ms ON / 1000ms OFF
+      break;
+    case STATE_WARNING:
+      buzzInterval = 1500; // Very slow warning pulse
+      break;
+    default:
+      buzzInterval = 0;    // Silence for routine, unconnected, or ended events
+      break;
+  }
+
+  uint32_t targetFreq = 0;
+
+  // 3. Update the pulse pattern if an alert is active
+  if (buzzInterval > 0) {
+    if (millis() - lastBuzzerUpdate >= buzzInterval) {
+      lastBuzzerUpdate = millis();
+      patternState = !patternState; // Toggle between ON and OFF
+    }
+    // If patternState is true, play the tone. Otherwise, silence (0Hz)
+    targetFreq = patternState ? activeFreq : 0; 
+  } else {
+    patternState = false; // Reset so it starts fresh next time
+    targetFreq = 0;       // Force silence
+  }
+
+  // 4. HARDWARE WRITE: Only send the command if the frequency actually needs to change
+  if (targetFreq != lastAppliedFreq) {
+    ledcWriteTone(ledcChannel, targetFreq);
+    lastAppliedFreq = targetFreq;
   }
 }
 
-void operateVibrations(){
+void operateVibrations()
+{
+  static bool lastMotorState = false;
+  static unsigned long lastVibrationUpdate = 0;
+  static bool patternState = false;
+  static AlertState lastHandledState = STATE_UNCONNECTED;
 
+  // 1. IMMEDIATE TRIGGER: If the state JUST changed, reset the timer 
+  // and force the motor ON immediately. No waiting for the next cycle!
+  if (currentState != lastHandledState) {
+    lastHandledState = currentState;
+    patternState = true; 
+    lastVibrationUpdate = millis(); 
+  }
+
+  // 2. Determine the pulse interval based on the current state
+  unsigned long vibrationInterval = 0;
+  
+  switch (currentState) {
+    case STATE_ALERT_ROCKETS:
+    case STATE_ALERT_AIRCRAFT:
+      vibrationInterval = 400; // Fast pulse: 400ms ON, 400ms OFF
+      break;
+    case STATE_WARNING:
+      vibrationInterval = 1000; // Slow pulse: 1000ms ON, 1000ms OFF
+      break;
+    default:
+      vibrationInterval = 0; // Motor OFF for routine, unconnected, or ended states
+      break;
+  }
+
+  // 3. Update the pulse pattern if an alert is active
+  bool targetMotorState = false;
+
+  if (vibrationInterval > 0) {
+    if (millis() - lastVibrationUpdate >= vibrationInterval) {
+      lastVibrationUpdate = millis();
+      patternState = !patternState;
+    }
+    targetMotorState = patternState;
+  } else {
+    patternState = false; // Reset pattern so it starts immediately next time
+    targetMotorState = false;
+  }
+
+  // 4. Hardware Write: Only send a signal if the motor's state needs to change
+  if (targetMotorState != lastMotorState) {
+    digitalWrite(VIBRATION_PIN, targetMotorState ? HIGH : LOW);
+    lastMotorState = targetMotorState;
+  }
 }
 
 static unsigned long lastWiFiAttempt = 0;
@@ -509,6 +596,7 @@ void connectToWifiIfNeeded()
       lastWiFiAttempt = millis();
       Serial.println("Attempting to reconnect...");
       currentState = STATE_UNCONNECTED;
+      networkErrorCount++;
 
       WiFi.disconnect();
       delay(100);       // השהייה קטנטנה שמאפשרת לאנטנה להתנתק באמת
@@ -520,8 +608,8 @@ void connectToWifiIfNeeded()
 
 void handleAlertsPoling(){
   static unsigned long lastApiCheck = 0;
-  API_CHECK_INTERVAL = (currentState == STATE_NO_ALERTS) ? 5000 : 1000;
-  if (millis() - lastApiCheck >= API_CHECK_INTERVAL) //did enough time passed from last check?
+  apiCheckInterval = (currentState == STATE_NO_ALERTS) ? 5000 : 1000;
+  if (millis() - lastApiCheck >= apiCheckInterval) //did enough time passed from last check?
   {
     lastApiCheck = millis();
 
@@ -535,7 +623,6 @@ void handleAlertsPoling(){
         networkErrorCount++;
         Serial.printf("Network error count: %d, network recovery events count: %d\n", networkErrorCount, MajorNetworkErrorRecoveryCount);
 
-        // TODO: consider calling connectToWifiIfNeeded()
         if (networkErrorCount >= 3)
         {
           Serial.println(">>> Too many network errors. Forcing HARD WiFi Reset...");
@@ -599,8 +686,8 @@ void setupOTA()
 
 void setup()
 {
-  esp_task_wdt_init(5, true); // טיימר של 30 שניות, הפעלה מחדש במקרה של תקיעה
-  esp_task_wdt_add(NULL);      // הוספת הלופ הנוכחי לניטור
+  esp_task_wdt_init(10, true); 
+  esp_task_wdt_add(NULL);
 
   Serial.begin(115200);
 
@@ -612,6 +699,9 @@ void setup()
   {
     Serial.println(">>> Config loaded successfully:");
   }
+
+  pinMode(VIBRATION_PIN, OUTPUT);
+  digitalWrite(VIBRATION_PIN, LOW);
 
   // define buzzer
   ledcSetup(ledcChannel, freq, resolution);
