@@ -47,6 +47,8 @@
 #pragma endregion defines
 
 
+bool OTAUpdateInProgress = false;
+
 const char *ntpServer = "pool.ntp.org";
 const long gmtOffset_sec = 0;     // Replace with your timezone offset in seconds (e.g., -18000 for EST)
 const int daylightOffset_sec = 0; // Set to 3600 if your timezone observes daylight saving time
@@ -671,18 +673,31 @@ void setupOTA()
 
   // These are just optional callbacks to print the update progress to the Serial monitor
   ArduinoOTA.onStart([]()
-                     { Serial.println("\n--- OTA Update Starting ---"); });
+                     { 
+                      OTAUpdateInProgress = true;
+                      Serial.println("\n--- OTA Update Starting ---"); 
+                    });
   ArduinoOTA.onEnd([]()
-                   { Serial.println("\n--- OTA Update Complete ---"); });
+                   { 
+                    OTAUpdateInProgress = false;
+                    Serial.println("\n--- OTA Update Complete ---"); 
+                  });
   ArduinoOTA.onProgress([](unsigned int progress, unsigned int total)
-                        { Serial.printf("Progress: %u%%\r", (progress / (total / 100))); });
+                        { 
+                          esp_task_wdt_reset();
+                          Serial.printf("Progress: %u%%\r", (progress / (total / 100))); 
+                        });
   ArduinoOTA.onError([](ota_error_t error)
-                     { Serial.printf("Error[%u]: ", error); });
+                     { 
+                      OTAUpdateInProgress=false;
+                      Serial.printf("Error[%u]: ", error); 
+                    });
 
   // Start the OTA service
   ArduinoOTA.begin();
   Serial.println("OTA Service Started. Ready for remote uploads.");
 }
+
 
 void setup()
 {
@@ -737,13 +752,16 @@ void setup()
 
 void loop(){
   esp_task_wdt_reset();
-  connectToWifiIfNeeded();
   ArduinoOTA.handle();
 
-  handleAlertsPoling();
-  handleAlertEndedStateTimout();
+  if (!OTAUpdateInProgress){
+    connectToWifiIfNeeded();
+    handleAlertsPoling();
+    handleAlertEndedStateTimout();
 
-  operateLEDs();
-  if (useBuzzer) operateBuzzer();
-  if (useVibrations) operateVibrations();
+    operateLEDs();
+    if (useBuzzer) operateBuzzer();
+    if (useVibrations) operateVibrations();
+  }
+
 }

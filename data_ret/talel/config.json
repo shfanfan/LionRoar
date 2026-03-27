@@ -1,16 +1,17 @@
 {
-  "area": "נוף הגליל",
-  "wifi_ssid": "HOTBOX-35BE",
-  "wifi_password": "25658299",
+  "area": "טל - אל",
+  "wifi_ssid": "Harari",
+  "wifi_password": "10203040",
   "colors": {
     "unconnected": [0, 0, 120],
     "unconnected_dim": [0, 0, 60],
-    "no_alerts": [0, 255, 0],
+    "no_alerts": [0, 1, 0],
     "warning": [255, 100, 0],
     "alert_rockets": [255, 0, 0],
     "alert_general": [255, 60, 30],
     "event_ended": [0, 255, 0],
-    "event_ended_dim": [ 0, 10, 0]
+    "event_ended_dim": [0, 10, 0]
   },
-  "useBuzzer": false
+  "useBuzzer": false,
+  "use_vibrations" : false
 }
