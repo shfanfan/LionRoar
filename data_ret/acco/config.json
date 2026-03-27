@@ -1,7 +1,7 @@
 {
-  "area": "טל - אל",
-  "wifi_ssid": "Harari",
-  "wifi_password": "10203040",
+  "area": "עכו",
+  "wifi_ssid": "Porat_5",
+  "wifi_password": "2030405060",
   "colors": {
     "unconnected": [0, 0, 120],
     "unconnected_dim": [0, 0, 60],
@@ -13,5 +13,6 @@
     "event_ended_dim": [0, 10, 0]
   },
   "useBuzzer": false,
-  "use_vibrations" : false
+  "use_vibrations" : true,
+  "vibrationStrength": 50
 }

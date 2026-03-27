@@ -1,5 +1,5 @@
 {
-  "area": "עכו",
+  "area": "טל - אל",
   "wifi_ssid": "Harari",
   "wifi_password": "10203040",
   "colors": {
@@ -13,5 +13,6 @@
     "event_ended_dim": [0, 10, 0]
   },
   "useBuzzer": false,
-  "use_vibrations" : false
+  "use_vibrations" : true,
+  "vibrationStrength": 180
 }

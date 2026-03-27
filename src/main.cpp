@@ -6,6 +6,17 @@
 #include <LittleFS.h>
 #include <ArduinoOTA.h>
 #include <esp_task_wdt.h>
+#include <WebServer.h>
+
+// ניצור מופע של השרת על פורט 80 (פורט סטנדרטי לגלישה)
+WebServer server(80);
+// משתנה שיעזור לנו לדעת אם אנחנו במצב "ראוטר" (AP) או מחוברים לרשת
+bool isAPMode = false;
+//TODO: connectivity setup via local web page
+//TODO: settings setup (including save) via local web page
+//TODO: OTA updates via remote web access (per individual MAC)
+
+
 
 #pragma region defines
 
@@ -45,6 +56,17 @@
 #endif
 
 #pragma endregion defines
+
+const int buzzerPin = 5;
+const int ledcChannel = 0;
+const int resolution = 8;
+const int freq = 2000;
+
+// Add these to your global defines
+const int vibChannel = 1;     // Use a different channel than the buzzer!
+const int vibFreq = 200;     // Hz
+const int vibRes = 8;         // 8-bit resolution (0-255)
+int vibrationStrength = 180;  // Your desired strength (0 to 255)
 
 
 bool OTAUpdateInProgress = false;
@@ -95,12 +117,128 @@ enum AlertState
 //6  אירוע חומרים מסוכנים דליפה של חומ"ס
 //10 בדיקה / תרגיל	מופעל בזמן תרגילים של פיקוד העורף
 
-
 int networkErrorCount = 0; // מונה שגיאות רשת ברצף
 int MajorNetworkErrorRecoveryCount = 0; // סף לשגיאה חמורה שתוביל לריסט
 AlertState currentState = STATE_UNCONNECTED;
 unsigned long eventStartTime = 0; // טיימר למצב סיום אירוע
 
+#pragma region webServer
+
+// HTML tempate:
+const char* htmlTemplate = R"=====(
+<!DOCTYPE html>
+<html dir='rtl' lang='he'>
+<head>
+  <meta charset='UTF-8'>
+  <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+  <title>הגדרות צופר עורף</title>
+  <style>
+    body { font-family: Arial, sans-serif; background-color: #f4f4f9; padding: 20px; }
+    div.container { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 4px 8px rgba(0,0,0,0.1); max-width: 400px; margin: auto; }
+    h2 { color: #333; text-align: center; }
+    label { font-weight: bold; margin-top: 10px; display: block; }
+    input[type='text'], input[type='password'], input[type='number'] { width: 100%; padding: 8px; margin: 5px 0 15px 0; border: 1px solid #ccc; border-radius: 5px; box-sizing: border-box; }
+    input[type='checkbox'] { transform: scale(1.5); margin: 10px; }
+    button { width: 100%; background-color: #28a745; color: white; padding: 10px; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; }
+    button:hover { background-color: #218838; }
+  </style>
+</head>
+<body>
+  <div class='container'>
+    <h2>הגדרות מערכת</h2>
+    <form action='/save' method='POST'>
+      <label>שם רשת WiFi (SSID):</label>
+      <input type='text' name='ssid' value='{SSID_VAL}'>
+      
+      <label>סיסמת WiFi:</label>
+      <input type='password' name='password' value='{PASS_VAL}'>
+      
+      <label>אזור התרעה (למשל: טל - אל):</label>
+      <input type='text' name='area' value='{AREA_VAL}'>
+      
+      <label>עוצמת רטט (0-255):</label>
+      <input type='number' name='vibStrength' min='0' max='255' value='{VIB_VAL}'>
+      
+      <label><input type='checkbox' name='useVib' {USE_VIB_CHK}> הפעל מנוע רטט</label><br>
+      <label><input type='checkbox' name='useBuzzer' {USE_BUZ_CHK}> הפעל זמזם</label><br><br>
+      
+      <button type='submit'>שמור והפעל מחדש</button>
+    </form>
+  </div>
+</body>
+</html>
+)=====";
+
+void handleRoot() {
+  // מעתיקים את תבנית ה-HTML לתוך אובייקט String שניתן לעריכה
+  String html = String(htmlTemplate);
+  
+  // מחליפים את שומרי המקום בערכים האמיתיים מהמשתנים הגלובליים שלך
+  html.replace("{SSID_VAL}", wifiSsid);
+  html.replace("{PASS_VAL}", wifiPassword);
+  html.replace("{AREA_VAL}", area);
+  html.replace("{VIB_VAL}", String(vibrationStrength));
+  
+  // עבור צ'קבוקסים, אם זה true נשתול את המילה 'checked', אחרת נשאיר ריק
+  html.replace("{USE_VIB_CHK}", useVibrations ? "checked" : "");
+  html.replace("{USE_BUZ_CHK}", useBuzzer ? "checked" : "");
+  
+  // שולחים את הדף המוכן לדפדפן
+  server.send(200, "text/html", html);
+}
+
+void handleSave() {
+  Serial.println("Received new settings from Web UI!");
+  
+  File file = LittleFS.open("/config.json", "r");
+  JsonDocument doc;
+  if (file) {
+    deserializeJson(doc, file);
+    file.close();
+  }
+
+  // שמירת הנתונים ל-JSON
+  if (server.hasArg("ssid")) doc["wifi_ssid"] = server.arg("ssid");
+  if (server.hasArg("password")) doc["wifi_password"] = server.arg("password");
+  if (server.hasArg("area")) doc["area"] = server.arg("area"); 
+  if (server.hasArg("vibStrength")) doc["vibrationStrength"] = server.arg("vibStrength").toInt();
+  
+  doc["use_vibrations"] = server.hasArg("useVib") ? true : false;
+  doc["use_buzzer"] = server.hasArg("useBuzzer") ? true : false;
+
+  // כתיבה חזרה ל-LittleFS
+  file = LittleFS.open("/config.json", "w");
+  if (file) {
+    serializeJson(doc, file);
+    file.close();
+    Serial.println("Config saved successfully.");
+  }
+
+  // דף תגובה מהיר עם Raw String
+  String response = R"=====(
+    <html dir='rtl' lang='he'>
+    <body style='font-family: Arial; text-align: center; margin-top: 50px;'>
+      <h2>ההגדרות נשמרו בהצלחה!</h2>
+      <p>המכשיר מבצע הפעלה מחדש. אם שינית הגדרות רשת, אנא התחבר מחדש.</p>
+    </body>
+    </html>
+  )=====";
+  
+  server.send(200, "text/html", response);
+  
+  delay(2000); // מחכים 2 שניות כדי שהדפדפן יספיק לטעון את דף התגובה
+  ESP.restart(); // הפעלה מחדש מבוקרת
+}
+
+
+void setupWebServerRoutes() {
+  server.on("/", handleRoot);
+  server.on("/save", HTTP_POST, handleSave);
+  server.begin();
+  Serial.println("HTTP server started");
+}
+
+#pragma endregion webServer html stuff
 
 String stateToStr(AlertState state) {
   switch (state) {
@@ -203,6 +341,9 @@ bool getDataFromFile()
   wifiPassword = doc["wifi_password"] | "your_password";
   useBuzzer = doc["use_buzzer"] | false;
   useVibrations = doc["use_vibrations"] | false;
+  int rawStrength = doc["vibrationStrength"] | 180; 
+  // Safety: ensure the value is within 8-bit PWM limits (0-255)
+  vibrationStrength = constrain(rawStrength, 0, 255);
 
   colorUnconnected    = loadColorOrDefault(doc, "unconnected", 0, 0, 120);
   colorUnconnectedDim = loadColorOrDefault(doc, "unconnected_dim", 0, 0, 60);
@@ -476,10 +617,7 @@ void operateLEDs()
   
 }
 
-const int buzzerPin = 5;
-const int ledcChannel = 0;
-const int resolution = 8;
-const int freq = 2000;
+
 void operateBuzzer()
 {
   static unsigned long lastBuzzerUpdate = 0;
@@ -535,57 +673,131 @@ void operateBuzzer()
   }
 }
 
+
 void operateVibrations()
 {
-  static bool lastMotorState = false;
+  static int lastAppliedDuty = -1;
   static unsigned long lastVibrationUpdate = 0;
+  static unsigned long alertStartTime = 0; // טיימר חדש למעקב אחר משך האזעקה
   static bool patternState = false;
   static AlertState lastHandledState = STATE_UNCONNECTED;
 
-  // 1. IMMEDIATE TRIGGER: If the state JUST changed, reset the timer 
-  // and force the motor ON immediately. No waiting for the next cycle!
+  // 1. זיהוי שינוי מצב - איפוס כל הטיימרים
   if (currentState != lastHandledState) {
     lastHandledState = currentState;
     patternState = true; 
     lastVibrationUpdate = millis(); 
+    alertStartTime = millis(); // שומרים את הרגע המדויק שבו החלה ההתרעה
   }
 
-  // 2. Determine the pulse interval based on the current state
   unsigned long vibrationInterval = 0;
   
   switch (currentState) {
     case STATE_ALERT_ROCKETS:
     case STATE_ALERT_AIRCRAFT:
-      vibrationInterval = 400; // Fast pulse: 400ms ON, 400ms OFF
+      vibrationInterval = 400; 
       break;
     case STATE_WARNING:
-      vibrationInterval = 1000; // Slow pulse: 1000ms ON, 1000ms OFF
+      vibrationInterval = 1000; 
       break;
     default:
-      vibrationInterval = 0; // Motor OFF for routine, unconnected, or ended states
+      vibrationInterval = 0; 
       break;
   }
 
-  // 3. Update the pulse pattern if an alert is active
-  bool targetMotorState = false;
+  int targetDuty = 0;
 
-  if (vibrationInterval > 0) {
+  // 2. בדיקה: האם אנחנו עדיין בתוך 30 השניות הראשונות של האזעקה?
+  bool isWithinTimeLimit = (millis() - alertStartTime <= 30000);
+
+  // 3. לוגיקת הפולסים (רק אם יש התרעה פעילה, ורק אם טרם עברו 30 שניות)
+  if (vibrationInterval > 0 && isWithinTimeLimit) {
     if (millis() - lastVibrationUpdate >= vibrationInterval) {
       lastVibrationUpdate = millis();
       patternState = !patternState;
     }
-    targetMotorState = patternState;
+    // אם הסטטוס דלוק, ניתן את העוצמה. אחרת 0.
+    targetDuty = patternState ? vibrationStrength : 0;
   } else {
-    patternState = false; // Reset pattern so it starts immediately next time
-    targetMotorState = false;
+    // אם עברו 30 שניות (או שאין התרעה), כופים כיבוי של המנוע
+    patternState = false;
+    targetDuty = 0;
   }
 
-  // 4. Hardware Write: Only send a signal if the motor's state needs to change
-  if (targetMotorState != lastMotorState) {
-    digitalWrite(VIBRATION_PIN, targetMotorState ? HIGH : LOW);
-    lastMotorState = targetMotorState;
+  // 4. כתיבה לחומרה והשהיה (הטריק שלך)
+  if (targetDuty != lastAppliedDuty) {
+    
+    // מדפיס רק כשיש שינוי
+    Serial.printf("vibration is %s, target duty: %d, vibrationInterval=%d \n", patternState ? "on" : "off", targetDuty, vibrationInterval);
+    
+    ledcWrite(vibChannel, targetDuty);
+    lastAppliedDuty = targetDuty;
+
+    // אם הרגע הדלקנו את המנוע - עוצרים את התוכנית כדי לתת לו מקסימום מתח
+    if (targetDuty > 0) {
+      esp_task_wdt_reset();      // "מאכילים" את כלב השמירה כדי שלא יעשה ריסטרט בגלל ה-delay
+      delay(vibrationInterval);  // חוסמים את ה-WiFi ומרעידים בעוצמה!
+      
+      // אין צורך לאפס את lastVibrationUpdate כאן.
+      // מכיוון שעשינו delay, ברגע שהפונקציה תרוץ שוב בלופ הבא, 
+      // הפער בזמנים (millis) יהיה גדול מה-Interval, והקוד יכבה את המנוע אוטומטית.
+    }
   }
 }
+
+
+// void operateVibrations()
+// {
+//   static int lastAppliedDuty = -1; // Track duty cycle to avoid spamming
+//   static unsigned long lastVibrationUpdate = 0;
+//   static bool patternState = false;
+//   static AlertState lastHandledState = STATE_UNCONNECTED;
+
+//   // 1. IMMEDIATE TRIGGER
+//   if (currentState != lastHandledState) {
+//     lastHandledState = currentState;
+//     patternState = true; 
+//     lastVibrationUpdate = millis(); 
+//   }
+
+//   unsigned long vibrationInterval = 0;
+  
+//   switch (currentState) {
+//     case STATE_ALERT_ROCKETS:
+//     case STATE_ALERT_AIRCRAFT:
+//       vibrationInterval = 600; 
+//       break;
+//     case STATE_WARNING:
+//       vibrationInterval = 1000; 
+//       break;
+//     default:
+//       vibrationInterval = 0; 
+//       break;
+//   }
+
+//   int targetDuty = 0;
+
+//   // 2. Pulse Logic
+//   if (vibrationInterval > 0) {
+//     if (millis() - lastVibrationUpdate >= vibrationInterval) {
+//       lastVibrationUpdate = millis();
+//       patternState = !patternState;
+//     }
+//     // If ON, use our strength value. If OFF, use 0.
+//     targetDuty = patternState ? vibrationStrength : 0;
+//   } else {
+//     patternState = false;
+//     targetDuty = 0;
+//   }
+
+//   // 3. PWM Hardware Write
+//   if (targetDuty != lastAppliedDuty) {
+//     Serial.printf("vibration is %s, target duty: %d, vibrationInterval=%d \n", patternState?"on":"off" , targetDuty , vibrationInterval);
+//     ledcWrite(vibChannel, targetDuty);
+//     lastAppliedDuty = targetDuty;
+//     if (targetDuty>0) delay(vibrationInterval);
+//   }
+// }
 
 static unsigned long lastWiFiAttempt = 0;
 void connectToWifiIfNeeded()
@@ -641,17 +853,18 @@ void handleAlertsPoling(){
             // אנחנו נאפס גם את זמן בדיקת ה-API כדי שלא ינסה לבדוק מיד לפני שהרשת קמה
             lastApiCheck = millis();
           }
-          if (networkErrorCount > 10 || MajorNetworkErrorRecoveryCount > 5)
-          {
-            // ESP.reset()
-            ESP.restart();
-          }
         }
       }
       else
       {
         networkErrorCount = 0;
         parseAlertJsonAndUpdateState(jsonPayload);
+      }
+    } else { //not connected
+      networkErrorCount++;
+      if (networkErrorCount > 10 || MajorNetworkErrorRecoveryCount > 5)
+      {
+        ESP.restart();
       }
     }
   }
@@ -715,53 +928,126 @@ void setup()
     Serial.println(">>> Config loaded successfully:");
   }
 
-  pinMode(VIBRATION_PIN, OUTPUT);
-  digitalWrite(VIBRATION_PIN, LOW);
+  if(useBuzzer){
+    // TODO: see that useBuzzer and useVibrations have effect here
+    // TODO: move code to hardwareSetup() function?
+    // define buzzer
+    ledcSetup(ledcChannel, freq, resolution);
+    ledcAttachPin(buzzerPin, ledcChannel);
 
-  // define buzzer
-  ledcSetup(ledcChannel, freq, resolution);
-  ledcAttachPin(buzzerPin, ledcChannel);
-  // test buzzer
-  ledcWriteTone(ledcChannel, 1000);
-  delay(1000);
-  ledcWriteTone(ledcChannel, 0);
+      
+    ledcWriteTone(ledcChannel, 1000);
+    delay(1000);
+    ledcWriteTone(ledcChannel, 0);
+  }
+
+  if (useVibrations){
+    //define vibration motor
+    Serial.printf("vibration pin is %d\n",VIBRATION_PIN);
+    ledcSetup(vibChannel, vibFreq, vibRes);
+    ledcAttachPin(VIBRATION_PIN, vibChannel);
+
+    //TODO: move test to handle function (if(firstTime)...)
+    //test buzzer and vibration motor:
+
+    ledcWrite(vibChannel, 100);
+    delay(1000);
+    ledcWrite(vibChannel, 0);
+  }
+
 
   strip.begin();
   strip.setPixelColor(2, strip.Color(255, 0, 0));
   strip.setPixelColor(1, strip.Color(0, 255, 0));
   strip.setPixelColor(0, strip.Color(0, 0, 255));
   strip.show();
+  
+  Serial.printf("Connecting to %s WiFi \n", wifiSsid.c_str());
+  WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str());
+  
+  // נסיון חיבור למשך 15 שניות
+  int retries = 0;
+  while (WiFi.status() != WL_CONNECTED && retries < 5) {
+    delay(1000);
+    Serial.print(".");
+    retries++;
+  }
+  Serial.println();
 
-  Serial.printf("connect to %s WiFi \n\n", wifiSsid.c_str());
-  WiFi.begin(wifiSsid.c_str(), wifiPassword);
-  delay(1000);
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.printf("Connected! IP Address: %s , MAC address: %s \n",WiFi.localIP().toString().c_str(),WiFi.macAddress());
+    isAPMode = false; 
+  } else {
+    // נכשל בחיבור -> פותח רשת עצמאית (Access Point)
+    Serial.println("WiFi Failed. Starting Access Point mode...");
+    WiFi.disconnect();
+    WiFi.mode(WIFI_AP);
+    WiFi.softAP("Alert_Setup", "12345678"); // שם הרשת והסיסמה שלה
+    Serial.print("AP IP Address: ");
+    Serial.println(WiFi.softAPIP()); // בדרך כלל יהיה 192.168.4.1
+    isAPMode = true;
+    
+    // אופציונלי: אפשר לצבוע את הלדים בצבע ספציפי (למשל סגול) כדי שתדע שזה במצב הגדרות
+    strip.fill(strip.Color(100, 0, 100));
+    strip.show();
+  }
 
-  Serial.print("ESP32 IP Address: ");
-  Serial.println(WiFi.localIP());
+  // בכל מקרה מפעילים את שרת הרשת! (כדי שאפשר יהיה לקנפג גם ברשת המקומית וגם ב-AP)
+  setupWebServerRoutes();
 
-  // to have most fastest wifi. power hungry - disable if on battery use:
-  setupOTA();
-
-  Serial.printf("area of interest -  %s\n", area.c_str());
-
-  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
-  Serial.print("setup complete at ");
-  printLocalTime();
-  Serial.println("----------------------------------------------------------\n");
+  // ... (המשך ה-setup: OTA, זמן וכו' - רק אם אנחנו לא ב-AP Mode) ...
+  if (!isAPMode) {
+    setupOTA();
+    configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  }
 }
+//   Serial.printf("connect to %s WiFi \n\n", wifiSsid.c_str());
+//   WiFi.begin(wifiSsid.c_str(), wifiPassword.c_str);
+
+
+
+//   Serial.print("ESP32 IP Address: ");
+//   Serial.println(WiFi.localIP());
+
+
+//   // to have most fastest wifi. power hungry - disable if on battery use:
+//   setupOTA();
+
+//   Serial.printf("area of interest -  %s\n", area.c_str());
+
+//   configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+//   Serial.print("setup complete at ");
+//   printLocalTime();
+//   Serial.println("----------------------------------------------------------\n");
+// }
 
 void loop(){
   esp_task_wdt_reset();
-  ArduinoOTA.handle();
+  
+  server.handleClient(); 
 
-  if (!OTAUpdateInProgress){
-    connectToWifiIfNeeded();
-    handleAlertsPoling();
-    handleAlertEndedStateTimout();
+  if (!isAPMode) {
+    ArduinoOTA.handle();
 
-    operateLEDs();
-    if (useBuzzer) operateBuzzer();
-    if (useVibrations) operateVibrations();
+    if (!OTAUpdateInProgress){
+      connectToWifiIfNeeded();
+      handleAlertsPoling();
+      handleAlertEndedStateTimout();
+
+      operateLEDs();
+      if (useBuzzer) operateBuzzer();
+      if (useVibrations) operateVibrations();
+    }
+
+  }else {
+    // אם אנחנו במצב הגדרות, נהבהב את הלדים בסגול כדי שנזכור שצריך להתחבר דרך הטלפון
+    static unsigned long lastBlink = 0;
+    if (millis() - lastBlink > 1000) {
+      lastBlink = millis();
+      static bool ledState = false;
+      ledState = !ledState;
+      strip.fill(ledState ? strip.Color(100, 0, 100) : strip.Color(0, 0, 0));
+      strip.show();
+    }
   }
-
 }
