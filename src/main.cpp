@@ -374,8 +374,10 @@ bool parseAlertJsonAndUpdateState(String jsonPayload)
     return res;
   }else if (jsonPayload.equals("[]")){
     Serial.print(".");
-    changeEvent( STATE_NO_ALERTS);
-    DEBUG_PRINTF("\n\n>>> small json :\n%s\n(length: %d)-> no alerts (Moving to STATE_NO_ALERTS).", jsonPayload.c_str(), jsonPayload.length());
+    if (currentState == STATE_UNCONNECTED){
+      changeEvent(STATE_NO_ALERTS);
+      DEBUG_PRINTF("\n\n>>> small json :\n%s\n(length: %d)-> no alerts (Moving to STATE_NO_ALERTS).", jsonPayload.c_str(), jsonPayload.length());
+    }
     return res;
   } else {
 
@@ -708,7 +710,7 @@ void operateVibrations()
   int targetDuty = 0;
 
   // 2. בדיקה: האם אנחנו עדיין בתוך 30 השניות הראשונות של האזעקה?
-  bool isWithinTimeLimit = (millis() - alertStartTime <= 30000);
+  bool isWithinTimeLimit = (millis() - alertStartTime <= 20000);
 
   // 3. לוגיקת הפולסים (רק אם יש התרעה פעילה, ורק אם טרם עברו 30 שניות)
   if (vibrationInterval > 0 && isWithinTimeLimit) {
@@ -736,7 +738,7 @@ void operateVibrations()
     // אם הרגע הדלקנו את המנוע - עוצרים את התוכנית כדי לתת לו מקסימום מתח
     if (targetDuty > 0) {
       esp_task_wdt_reset();      // "מאכילים" את כלב השמירה כדי שלא יעשה ריסטרט בגלל ה-delay
-      delay(vibrationInterval);  // חוסמים את ה-WiFi ומרעידים בעוצמה!
+      delay(vibrationInterval+10);  // חוסמים את ה-WiFi ומרעידים בעוצמה!
       
       // אין צורך לאפס את lastVibrationUpdate כאן.
       // מכיוון שעשינו delay, ברגע שהפונקציה תרוץ שוב בלופ הבא, 
@@ -950,8 +952,8 @@ void setup()
     //TODO: move test to handle function (if(firstTime)...)
     //test buzzer and vibration motor:
 
-    ledcWrite(vibChannel, 100);
-    delay(1000);
+    ledcWrite(vibChannel, 30);
+    delay(200);
     ledcWrite(vibChannel, 0);
   }
 
